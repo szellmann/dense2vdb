@@ -10,6 +10,8 @@
 #include <openvdb/math/Math.h>
 // ours
 #include "math_.h"
+#include "nanovdb_convert.h"
+#include "dense2nvdb.h"
 
 using int3 = math::vec3i;
 using float2 = math::vec2f;
@@ -144,126 +146,27 @@ int main(int argc, char **argv)
   std::cout << "Dims: " << g_dims.x << ':' << g_dims.y << ':' << g_dims.z << '\n';
   std::cout << "Type: " << g_type << '\n';
 
-  if (g_backgroundValue != g_backgroundValue) {
-    // compute value range:
-    float2 valueRange(1e31f,-1e31f);
-    for (int z=0; z<g_dims.z; ++z) {
-      for (int y=0; y<g_dims.y; ++y) {
-        for (int x=0; x<g_dims.x; ++x) {
-          const float value = getValue(input.data(), x, y, z);
-          valueRange.x = fminf(valueRange.x,value);
-          valueRange.y = fmaxf(valueRange.y,value);
-        }
-      }
-    }
-    std::cout << "Computed value range: " << valueRange << '\n';
+  d2nvdbParams parms;
+  parms.dims[0] = g_dims.x;
+  parms.dims[1] = g_dims.y;
+  parms.dims[2] = g_dims.z;
+  parms.type = g_type.c_str();
+  parms.backgroundValue = g_backgroundValue;
+  parms.tolerance = g_tolerance;
 
-    // compute histogram:
-    #define N (1<<10)
-    uint64_t counts[N];
-    std::memset(counts,0,sizeof(counts));
+  uint64_t bufferSize;
+  d2nvdbCompress(input.data(), &parms, nullptr, &bufferSize);
 
-    for (int z=0; z<g_dims.z; ++z) {
-      for (int y=0; y<g_dims.y; ++y) {
-        for (int x=0; x<g_dims.x; ++x) {
-          float value = getValue(input.data(), x, y, z);
-          value -= valueRange.x;
-          value /= valueRange.y-valueRange.x;
-          value *= N-1;
-          counts[int(value)]++;
-        }
-      }
-    }
+  std::vector<char> buffer(bufferSize);
+  d2nvdbCompress(input.data(), &parms, buffer.data(), &bufferSize);
 
-    int maxIndex = -1;
-    uint64_t maxCount = 0;
-    for (int i=0; i<N; ++i) {
-      if (counts[i] > maxCount) {
-        maxIndex = i;
-        maxCount = counts[i];
-      }
-    }
+  auto nvdbBuffer = nanovdb::HostBuffer::createFull(bufferSize, buffer.data()); // TODO: align!!
+  nanovdb::GridHandle<nanovdb::HostBuffer> handle = std::move(nvdbBuffer);
 
-    // tolerance depending on neighborhood:
-    // (this doesn't work so well yet; probably b/c our
-    // histograms are spiky, we should perhaps project the values
-    // using splatting or so?! Altenratively, use -tolerance on the cmdline!)
-    if (g_tolerance != g_tolerance) {
-      int stepsL=0, stepsR=0;
-      const float sensitivity = 0.9f;
-      for (int i=maxIndex; i>=0; --i) {
-        if (float(counts[i]) < sensitivity*maxCount) break;
-        stepsL++;
-      }
+  std::ofstream os(g_outFileName, std::ios::out | std::ios::binary);
+  nanovdb::io::Codec       codec = nanovdb::io::Codec::NONE;// compression codec for the file
+  nanovdb::io::writeGrid(os, handle, codec);
 
-      for (int i=maxIndex; i<N; ++i) {
-        if (float(counts[i]) < sensitivity*maxCount) break;
-        stepsR++;
-      }
-   
-      // reset maxIndex to median between L/R:
-      maxIndex = ((maxIndex-stepsL)+(maxIndex+stepsR))/2;
-      float valueMedian = maxIndex/float(N-1)*(valueRange.y-valueRange.x)+valueRange.x;
-      float valueL = (maxIndex-stepsL)/float(N-1)*(valueRange.y-valueRange.x)+valueRange.x;
-      g_tolerance = valueMedian-valueL;
-    }
-
-    // value occurring most frequenctly in the data set:
-    float maxValue = maxIndex/float(N-1)*(valueRange.y-valueRange.x)+valueRange.x;
-    g_backgroundValue = maxValue;
-  }
-
-  if (g_tolerance != g_tolerance) {
-    g_tolerance = 0.f;
-  }
-
-  std::cout << "Using " << g_backgroundValue << " as VDB background value!\n";
-  std::cout << "Using " << g_tolerance << " as tolerance!\n";
-
-  // VDB conversion:
-  openvdb::initialize();
-
-  openvdb::math::CoordBBox domain(openvdb::math::Coord(0, 0, 0),
-                                  openvdb::math::Coord(g_dims.x, g_dims.y, g_dims.z));
-
-  g_dense = new openvdb::tools::Dense<float>(domain, 0.f);
-
-  for (int z=0; z<g_dims.z; ++z) {
-    for (int y=0; y<g_dims.y; ++y) {
-      for (int x=0; x<g_dims.x; ++x) {
-        openvdb::math:: Coord ijk(x,y,z);
-        const float value = getValue(input.data(), x, y, z);
-        g_dense->setValue(ijk, value);
-      }
-    }
-  }
-
-  FloatRule rule(g_backgroundValue, g_tolerance);
-  openvdb::FloatTree::Ptr result
-      = openvdb::tools::extractSparseTree(*g_dense, rule, g_backgroundValue);
-  result->prune();
-
-  std::cout << "Extracted sparse tree:\n";
-  std::cout << "activeVoxelCount: " << result->activeVoxelCount() << '\n';
-  std::cout << "leafCount: " << result->leafCount() << '\n';
-
-  openvdb::FloatGrid::Ptr grid = openvdb::FloatGrid::create(result);
-
-  openvdb::CoordBBox bbox;
-  auto iter = grid->cbeginValueOn();
-  iter.getBoundingBox(bbox);
-  std::cout << "Bounding box: " << bbox << std::endl;
-
-  std::cout << "Writing to file: " << g_outFileName << '\n';
-
-  // store:
-  openvdb::io::File file(g_outFileName);
-  // Add the grid pointer to a container.
-  openvdb::GridPtrVec grids;
-  grids.push_back(grid);
-  // Write out the contents of the container.
-  file.write(grids);
-  file.close();
   return 0;
 }
 

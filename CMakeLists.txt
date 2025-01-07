@@ -12,10 +12,16 @@ project(dense2vdb LANGUAGES C CXX)
 
 include(GNUInstallDirs)
 
-find_package(OpenVDB REQUIRED)
+find_package(OpenVDB REQUIRED COMPONENTS openvdb nanovdb)
 
-# Add executable
+# Library
 
-add_executable(${PROJECT_NAME})
-target_sources(${PROJECT_NAME} PRIVATE main.cpp)
-target_link_libraries(${PROJECT_NAME} PRIVATE OpenVDB::openvdb)
+add_library(${PROJECT_NAME})
+target_sources(${PROJECT_NAME} PRIVATE dense2nvdb.cpp)
+target_link_libraries(${PROJECT_NAME} PUBLIC OpenVDB::openvdb OpenVDB::nanovdb)
+
+# Compressor executable
+
+add_executable(compress_${PROJECT_NAME})
+target_sources(compress_${PROJECT_NAME} PRIVATE main.cpp)
+target_link_libraries(compress_${PROJECT_NAME} PRIVATE ${PROJECT_NAME})
