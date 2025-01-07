@@ -1,4 +1,6 @@
 // std
+#include <cmath>
+#include <cstring>
 #include <string>
 #include <fstream>
 #include <vector>
@@ -19,8 +21,8 @@ static std::string g_inFileName;
 static std::string g_outFileName;
 static int3 g_dims{0,0,0};
 static std::string g_type = "float";
-static float g_backgroundValue{0.f};
-static float g_tolerance{0.f};
+static float g_backgroundValue{NAN};
+static float g_tolerance{NAN};
 
 static bool parseCommandLine(int argc, char **argv)
 {
@@ -34,6 +36,8 @@ static bool parseCommandLine(int argc, char **argv)
       g_dims.z = atoi(argv[++i]);
     } else if (arg == "-type")
       g_type = argv[++i];
+    else if (arg == "-background" || arg == "-bg")
+      g_backgroundValue = atof(argv[++i]);
     else if (arg == "-tolerance")
       g_tolerance = atof(argv[++i]);
     else if (arg[0] != '-')
@@ -55,7 +59,7 @@ static bool validateInput()
 
 static void printUsage()
 {
-  std::cerr << "./app in.raw -dims w h d -type {byte|short|float} [-tolerance <float-val>] -o out.vdb\n";
+  std::cerr << "./app in.raw -dims w h d -type {byte|short|float} [-background <float-val> -tolerance <float-val>] -o out.vdb\n";
 }
 
 class FloatRule
@@ -85,6 +89,21 @@ private:
     const DenseValueType mMaskValue;
     const DenseValueType mTolerance;
 };
+
+inline
+float getValue(const char *input, int x, int y, int z)
+{
+  float value = 0.f;
+  if (g_type == "byte") {
+    unsigned char *inVoxels = (unsigned char *)input;
+    value = inVoxels[x+y*g_dims.x+z*size_t(g_dims.x)*g_dims.y]/255.f;
+  }
+  else if (g_type == "float") {
+    float *inVoxels = (float *)input;
+    value = inVoxels[x+y*g_dims.x+z*size_t(g_dims.x)*g_dims.y];
+  }
+  return value;
+}
 
 int main(int argc, char **argv)
 {
@@ -125,6 +144,83 @@ int main(int argc, char **argv)
   std::cout << "Dims: " << g_dims.x << ':' << g_dims.y << ':' << g_dims.z << '\n';
   std::cout << "Type: " << g_type << '\n';
 
+  if (g_backgroundValue != g_backgroundValue) {
+    // compute value range:
+    float2 valueRange(1e31f,-1e31f);
+    for (int z=0; z<g_dims.z; ++z) {
+      for (int y=0; y<g_dims.y; ++y) {
+        for (int x=0; x<g_dims.x; ++x) {
+          const float value = getValue(input.data(), x, y, z);
+          valueRange.x = fminf(valueRange.x,value);
+          valueRange.y = fmaxf(valueRange.y,value);
+        }
+      }
+    }
+    std::cout << "Computed value range: " << valueRange << '\n';
+
+    // compute histogram:
+    #define N (1<<10)
+    uint64_t counts[N];
+    std::memset(counts,0,sizeof(counts));
+
+    for (int z=0; z<g_dims.z; ++z) {
+      for (int y=0; y<g_dims.y; ++y) {
+        for (int x=0; x<g_dims.x; ++x) {
+          float value = getValue(input.data(), x, y, z);
+          value -= valueRange.x;
+          value /= valueRange.y-valueRange.x;
+          value *= N-1;
+          counts[int(value)]++;
+        }
+      }
+    }
+
+    int maxIndex = -1;
+    uint64_t maxCount = 0;
+    for (int i=0; i<N; ++i) {
+      if (counts[i] > maxCount) {
+        maxIndex = i;
+        maxCount = counts[i];
+      }
+    }
+
+    // tolerance depending on neighborhood:
+    // (this doesn't work so well yet; probably b/c our
+    // histograms are spiky, we should perhaps project the values
+    // using splatting or so?! Altenratively, use -tolerance on the cmdline!)
+    if (g_tolerance != g_tolerance) {
+      int stepsL=0, stepsR=0;
+      const float sensitivity = 0.9f;
+      for (int i=maxIndex; i>=0; --i) {
+        if (float(counts[i]) < sensitivity*maxCount) break;
+        stepsL++;
+      }
+
+      for (int i=maxIndex; i<N; ++i) {
+        if (float(counts[i]) < sensitivity*maxCount) break;
+        stepsR++;
+      }
+   
+      // reset maxIndex to median between L/R:
+      maxIndex = ((maxIndex-stepsL)+(maxIndex+stepsR))/2;
+      float valueMedian = maxIndex/float(N-1)*(valueRange.y-valueRange.x)+valueRange.x;
+      float valueL = (maxIndex-stepsL)/float(N-1)*(valueRange.y-valueRange.x)+valueRange.x;
+      g_tolerance = valueMedian-valueL;
+    }
+
+    // value occurring most frequenctly in the data set:
+    float maxValue = maxIndex/float(N-1)*(valueRange.y-valueRange.x)+valueRange.x;
+    g_backgroundValue = maxValue;
+  }
+
+  if (g_tolerance != g_tolerance) {
+    g_tolerance = 0.f;
+  }
+
+  std::cout << "Using " << g_backgroundValue << " as VDB background value!\n";
+  std::cout << "Using " << g_tolerance << " as tolerance!\n";
+
+  // VDB conversion:
   openvdb::initialize();
 
   openvdb::math::CoordBBox domain(openvdb::math::Coord(0, 0, 0),
@@ -136,15 +232,7 @@ int main(int argc, char **argv)
     for (int y=0; y<g_dims.y; ++y) {
       for (int x=0; x<g_dims.x; ++x) {
         openvdb::math:: Coord ijk(x,y,z);
-        float value = 0.f;
-        if (g_type == "byte") {
-          unsigned char *inVoxels = (unsigned char *)input.data();
-          value = inVoxels[x+y*g_dims.x+z*size_t(g_dims.x)*g_dims.y]/255.f;
-        }
-        else if (g_type == "float") {
-          float *inVoxels = (float *)input.data();
-          value = inVoxels[x+y*g_dims.x+z*size_t(g_dims.x)*g_dims.y];
-        }
+        const float value = getValue(input.data(), x, y, z);
         g_dense->setValue(ijk, value);
       }
     }
