@@ -19,6 +19,8 @@ static std::string g_inFileName;
 static std::string g_outFileName;
 static int3 g_dims{0,0,0};
 static std::string g_type = "float";
+static float g_backgroundValue{0.f};
+static float g_tolerance{0.f};
 
 static bool parseCommandLine(int argc, char **argv)
 {
@@ -30,9 +32,11 @@ static bool parseCommandLine(int argc, char **argv)
       g_dims.x = atoi(argv[++i]);
       g_dims.y = atoi(argv[++i]);
       g_dims.z = atoi(argv[++i]);
-    } else if (arg == "-type") {
+    } else if (arg == "-type")
       g_type = argv[++i];
-    } else if (arg[0] != '-')
+    else if (arg == "-tolerance")
+      g_tolerance = atof(argv[++i]);
+    else if (arg[0] != '-')
       g_inFileName = arg;
     else return false;
   }
@@ -51,7 +55,7 @@ static bool validateInput()
 
 static void printUsage()
 {
-  std::cerr << "./app in.raw -dims w h d -type {byte|short|float} -o out.vdb\n";
+  std::cerr << "./app in.raw -dims w h d -type {byte|short|float} [-tolerance <float-val>] -o out.vdb\n";
 }
 
 class FloatRule
@@ -63,19 +67,23 @@ public:
   typedef float                                  ResultValueType;
   typedef float                                  DenseValueType;
 
-  FloatRule(const DenseValueType& value): mMaskValue(value){}
+  FloatRule(const DenseValueType &value, const DenseValueType &tolerance = DenseValueType(0.0))
+    : mMaskValue(value),
+      mTolerance(tolerance)
+  {}
 
   template <typename IndexOrCoord>
   void operator()(const DenseValueType& a, const IndexOrCoord& offset,
                   ResultLeafNodeType* leaf) const
   {
-    if (a > mMaskValue) {
+    if (a <= mMaskValue-mTolerance || a >= mMaskValue+mTolerance) {
       leaf->setValueOn(offset, a);
     }
   }
 
 private:
     const DenseValueType mMaskValue;
+    const DenseValueType mTolerance;
 };
 
 int main(int argc, char **argv)
@@ -142,10 +150,10 @@ int main(int argc, char **argv)
     }
   }
 
-  FloatRule rule(0.0f);
-  const float background(0.f);
+  FloatRule rule(g_backgroundValue, g_tolerance);
   openvdb::FloatTree::Ptr result
-      = openvdb::tools::extractSparseTree(*g_dense, rule, background);
+      = openvdb::tools::extractSparseTree(*g_dense, rule, g_backgroundValue);
+  result->prune();
 
   std::cout << "Extracted sparse tree:\n";
   std::cout << "activeVoxelCount: " << result->activeVoxelCount() << '\n';
