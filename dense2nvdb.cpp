@@ -328,7 +328,7 @@ void compressOpenVDB_v2(const char *input)
   std::cout << "Activating " << numBricksToActivate << " out of " << brickRefs.size()
     << " level-" << (level-1) << " bricks\n";
 
-  for (size_t i=brickRefs.size(); i>=brickRefs.size()-numBricksToActivate; i--) {
+  for (size_t i=brickRefs.size()-1; i>=brickRefs.size()-numBricksToActivate; i--) {
     const BrickRef &ref = brickRefs[i];
     int bx = ref.brickID.x;
     int by = ref.brickID.y;
