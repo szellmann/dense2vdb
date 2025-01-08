@@ -11,6 +11,8 @@ extern "C"
 typedef struct {
   int dims[3];
   const char *type;
+  double compressionRate;
+  // outdated, we're keeping these for testing though:
   float backgroundValue;
   float tolerance;
 } d2nvdbParams;

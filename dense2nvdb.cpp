@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstring>
+#include <algorithm>
 #include <string>
 #include <fstream>
 #include <vector>
@@ -27,6 +28,8 @@ static std::string g_inFileName;
 static std::string g_outFileName;
 static int3 g_dims{0,0,0};
 static std::string g_type = "";
+static double g_compressionRate{0.5};
+// outdated, we're keeping these for testing though:
 static float g_backgroundValue{NAN};
 static float g_tolerance{NAN};
 
@@ -77,6 +80,22 @@ float getValue(const char *input, int x, int y, int z)
   return value;
 }
 
+inline
+float2 computeValueRange(const char *input, int3 lower, int3 upper)
+{
+  float2 valueRange(1e31f,-1e31f);
+  for (int z=lower.z; z<upper.z; ++z) {
+    for (int y=lower.y; y<upper.y; ++y) {
+      for (int x=lower.x; x<upper.x; ++x) {
+        const float value = getValue(input, x, y, z);
+        valueRange.x = fminf(valueRange.x,value);
+        valueRange.y = fmaxf(valueRange.y,value);
+      }
+    }
+  }
+  return valueRange;
+}
+
 static
 bool populateState(const d2nvdbParams &params)
 {
@@ -96,27 +115,23 @@ bool populateState(const d2nvdbParams &params)
   if (g_type.empty())
     return false;
 
+  g_compressionRate = params.compressionRate;
+  if (g_compressionRate <= 0.0 || g_compressionRate > 1.0)
+    return false;
+
   g_backgroundValue = params.backgroundValue;
   g_tolerance = params.tolerance;
 
   return true;
 }
 
+// strategy implemented by VDB internally
+// keeping this aroudn for testing, at least for now:
 static
 void compressOpenVDB(const char *input)
 {
   if (g_backgroundValue != g_backgroundValue) {
-    // compute value range:
-    float2 valueRange(1e31f,-1e31f);
-    for (int z=0; z<g_dims.z; ++z) {
-      for (int y=0; y<g_dims.y; ++y) {
-        for (int x=0; x<g_dims.x; ++x) {
-          const float value = getValue(input, x, y, z);
-          valueRange.x = fminf(valueRange.x,value);
-          valueRange.y = fmaxf(valueRange.y,value);
-        }
-      }
-    }
+    float2 valueRange = computeValueRange(input, int3(0), g_dims);
     std::cout << "Computed value range: " << valueRange << '\n';
 
     // compute histogram:
@@ -205,6 +220,140 @@ void compressOpenVDB(const char *input)
   g_sparseGrids.push_back(grid);
 }
 
+// our strategy:
+static
+void compressOpenVDB_v2(const char *input)
+{
+  double targetCompressionRate = g_compressionRate;
+
+  float2 valueRange = computeValueRange(input, int3(0), g_dims);
+  std::cout << "Computed value range: " << valueRange << '\n';
+
+  // compute histogram:
+  #define N (1<<10)
+  uint64_t counts[N];
+  std::memset(counts,0,sizeof(counts));
+
+  for (int z=0; z<g_dims.z; ++z) {
+    for (int y=0; y<g_dims.y; ++y) {
+      for (int x=0; x<g_dims.x; ++x) {
+        float value = getValue(input, x, y, z);
+        value -= valueRange.x;
+        value /= valueRange.y-valueRange.x;
+        value *= N-1;
+        counts[int(value)]++;
+      }
+    }
+  }
+
+  int maxIndex = -1;
+  uint64_t maxCount = 0;
+  for (int i=0; i<N; ++i) {
+    if (counts[i] > maxCount) {
+      maxIndex = i;
+      maxCount = counts[i];
+    }
+  }
+
+  // That's the value for maxIndex; the one that occurs most
+  // often in our data:
+  float maxValue = maxIndex/float(N-1)*(valueRange.y-valueRange.x)+valueRange.x;
+
+  // Distance metrics (how "far away" is a given range from some other value):
+  auto distance1 = [](float scalar, float2 scalarRange) // to the closest of the two extrema
+  { return fminf(fabsf(scalarRange.x-scalar), fabsf(scalarRange.y-scalar)); };
+
+  auto distance2 = [](float scalar, float2 scalarRange) // to the farthest of the two extrema
+  { return fmaxf(fabsf(scalarRange.x-scalar), fabsf(scalarRange.y-scalar)); };
+
+  auto distance3 = [](float scalar, float2 scalarRange) // to the median of the two extrema
+  { return fabsf((scalarRange.x+scalarRange.y)*0.5f-scalar); };
+
+  // VDB conversion:
+  openvdb::initialize();
+
+  openvdb::math::CoordBBox domain(openvdb::math::Coord(0, 0, 0),
+                                  openvdb::math::Coord(g_dims.x, g_dims.y, g_dims.z));
+
+  using FloatTree = openvdb::tree::Tree4<float, 5, 4, 3>::Type;
+  openvdb::FloatGrid::Ptr grid = openvdb::FloatGrid::create(maxValue);
+
+  // in the following we assume a 5,4,3 layout, i.e., leaf nodes are 2^3 voxel grids
+  auto &tree = grid->tree();
+  // we want a full domain box, so we set the voxels at
+  // the extrema to their actual values and *activate them*:
+  tree.addTile(0, openvdb::math::Coord(0, 0, 0), getValue(input, 0, 0, 0), true);
+  tree.addTile(0, openvdb::math::Coord(g_dims.x-1, g_dims.y-1, g_dims.z-1),
+      getValue(input, g_dims.x-1, g_dims.y-1, g_dims.z-1), true);
+
+  auto div_up = [](int a, int b) { return (a + b - 1) / b; };
+  constexpr int brickSizeLog[3] = { 3, 4, 5 }; // from our tree topology
+  int level = 1;
+  int brickSize = 1<<brickSizeLog[level-1];
+  int3 numBricks(div_up(g_dims.x,brickSize),
+                 div_up(g_dims.y,brickSize),
+                 div_up(g_dims.z,brickSize));
+
+  struct BrickRef { int3 brickID; float2 valueRange; };
+  std::vector<BrickRef> brickRefs(numBricks.x*size_t(numBricks.y)*numBricks.z);
+
+  for (int bz=0; bz<numBricks.z; ++bz) {
+    for (int by=0; by<numBricks.y; ++by) {
+      for (int bx=0; bx<numBricks.x; ++bx) {
+        int3 lower = int3(bx,by,bz)*brickSize;
+        int3 upper = int3(bx+1,by+1,bz+1)*brickSize;
+        upper.x = std::min(upper.x,g_dims.x);
+        upper.y = std::min(upper.y,g_dims.y);
+        upper.z = std::min(upper.z,g_dims.z);
+
+        size_t brickIndex = bx + by * numBricks.x + bz * size_t(numBricks.x) * numBricks.y;
+
+        brickRefs[brickIndex].brickID = int3(bx,by,bz);
+        brickRefs[brickIndex].valueRange = computeValueRange(input, lower, upper);
+      }
+    }
+  }
+
+  std::sort(brickRefs.begin(),
+            brickRefs.end(),
+            [&](const BrickRef &a, const BrickRef &b)
+            { return distance2(maxValue, a.valueRange) < distance2(maxValue, b.valueRange); });
+
+  // std::cout << brickRefs[0].valueRange << '\n';
+  // std::cout << brickRefs[1].valueRange << '\n';
+  // std::cout << brickRefs.back().valueRange << '\n';
+
+  size_t numBricksToActivate(brickRefs.size() * targetCompressionRate);
+  std::cout << "Target compression rate: " << targetCompressionRate << '\n';
+  std::cout << "Activating " << numBricksToActivate << " out of " << brickRefs.size()
+    << " level-" << (level-1) << " bricks\n";
+
+  for (size_t i=brickRefs.size(); i>=brickRefs.size()-numBricksToActivate; i--) {
+    const BrickRef &ref = brickRefs[i];
+    int bx = ref.brickID.x;
+    int by = ref.brickID.y;
+    int bz = ref.brickID.z;
+    int3 lower = int3(bx,by,bz)*brickSize;
+    int3 upper = int3(bx+1,by+1,bz+1)*brickSize;
+    for (int z=lower.z; z<upper.z; ++z) {
+      for (int y=lower.y; y<upper.y; ++y) {
+        for (int x=lower.x; x<upper.x; ++x) {
+          tree.addTile(0, openvdb::math::Coord(x,y,z), getValue(input, x, y, z), true);
+        }
+      }
+    }
+  }
+
+  tree.prune();
+
+  std::cout << "activeVoxelCount: " << tree.activeVoxelCount() << '\n';
+  //std::cout << "activeTileCount: " << tree.activeTileCount() << '\n';
+  std::cout << "Compression achieved: "
+    << double(tree.activeVoxelCount()/double(g_dims.x*size_t(g_dims.y)*g_dims.z)) << '\n';
+
+  g_sparseGrids.push_back(grid);
+}
+
 //-----------------------------------------------------------------------------
 // API:
 //-----------------------------------------------------------------------------
@@ -221,7 +370,7 @@ void d2nvdbCompress(const char *raw_in,
     // to compress will populate that buffer _from the compressed
     // NVDB_!
     if (populateState(*params)) {
-      compressOpenVDB(raw_in);
+      compressOpenVDB_v2(raw_in);
       if (!g_sparseGrids.empty()) {
         auto handle = nanovdb_convert(&g_sparseGrids);
         g_nvdbGridData.resize(handle.buffer().size());

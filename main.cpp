@@ -23,6 +23,8 @@ static std::string g_inFileName;
 static std::string g_outFileName;
 static int3 g_dims{0,0,0};
 static std::string g_type = "float";
+static double g_compressionRate{0.5};
+// outdated, we're keeping these for testing though:
 static float g_backgroundValue{NAN};
 static float g_tolerance{NAN};
 
@@ -38,10 +40,14 @@ static bool parseCommandLine(int argc, char **argv)
       g_dims.z = atoi(argv[++i]);
     } else if (arg == "-type")
       g_type = argv[++i];
+    else if (arg == "-c" || arg == "compressionRate")
+      g_compressionRate = atof(argv[++i]);
+    /* deprecated:*/
     else if (arg == "-background" || arg == "-bg")
       g_backgroundValue = atof(argv[++i]);
     else if (arg == "-tolerance")
       g_tolerance = atof(argv[++i]);
+    /* END deprecated */
     else if (arg[0] != '-')
       g_inFileName = arg;
     else return false;
@@ -151,8 +157,7 @@ int main(int argc, char **argv)
   parms.dims[1] = g_dims.y;
   parms.dims[2] = g_dims.z;
   parms.type = g_type.c_str();
-  parms.backgroundValue = g_backgroundValue;
-  parms.tolerance = g_tolerance;
+  parms.compressionRate = g_compressionRate;
 
   uint64_t bufferSize;
   d2nvdbCompress(input.data(), &parms, nullptr, &bufferSize);
