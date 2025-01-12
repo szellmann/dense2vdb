@@ -18,7 +18,12 @@ find_package(OpenVDB REQUIRED COMPONENTS openvdb nanovdb)
 
 add_library(${PROJECT_NAME})
 target_sources(${PROJECT_NAME} PRIVATE dense2nvdb.cpp)
-target_link_libraries(${PROJECT_NAME} PUBLIC OpenVDB::openvdb OpenVDB::nanovdb)
+target_link_libraries(${PROJECT_NAME} PUBLIC OpenVDB::openvdb)
+if(DENSE2VDB_NANOVDB_INTERFACE_LIBRARY)
+  target_link_libraries(${PROJECT_NAME} PUBLIC ${DENSE2VDB_NANOVDB_INTERFACE_LIBRARY})
+else()
+  target_link_libraries(${PROJECT_NAME} PUBLIC OpenVDB::nanovdb)
+endif()
 
 # Compressor executable
 
