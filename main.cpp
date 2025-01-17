@@ -13,6 +13,10 @@
 #include "nanovdb_convert.h"
 #include "dense2nvdb.h"
 
+#include <omp.h>
+#define LOG_START double _t = omp_get_wtime();
+#define LOG_OMP(name) printf("%s: %f\n", #name, omp_get_wtime() - _t);
+
 using int3 = math::vec3i;
 using float2 = math::vec2f;
 using float3 = math::vec3f;
@@ -115,6 +119,8 @@ float getValue(const char *input, int x, int y, int z)
 
 int main(int argc, char **argv)
 {
+  LOG_START;
+
   if (!parseCommandLine(argc, argv)) {
     printUsage();
     exit(1);
@@ -141,12 +147,15 @@ int main(int argc, char **argv)
     input.resize(sizeof(float) * g_dims.x * size_t(g_dims.y) * g_dims.z);
   }
 
+  LOG_OMP(input_resize);
+
   if (input.empty()) {
     printUsage();
     exit(1);
   }
 
   in.read(input.data(), input.size());
+  LOG_OMP(in_read);
 
   std::cout << "Loading file: " << g_inFileName << '\n';
   std::cout << "Dims: " << g_dims.x << ':' << g_dims.y << ':' << g_dims.z << '\n';
@@ -162,15 +171,27 @@ int main(int argc, char **argv)
   uint64_t bufferSize;
   d2nvdbCompress(input.data(), &parms, nullptr, &bufferSize);
 
-  std::vector<char> buffer(bufferSize);
-  d2nvdbCompress(input.data(), &parms, buffer.data(), &bufferSize);
+  LOG_OMP(d2nvdbCompress1);
 
-  auto nvdbBuffer = nanovdb::HostBuffer::createFull(bufferSize, buffer.data()); // TODO: align!!
+  constexpr size_t alignment = 32;
+  char* alignedBuffer = (char*)std::aligned_alloc(alignment, bufferSize);
+
+  d2nvdbCompress(input.data(), &parms, alignedBuffer, &bufferSize);
+
+  LOG_OMP(d2nvdbCompress2);
+
+  auto nvdbBuffer = nanovdb::HostBuffer::createFull(bufferSize, alignedBuffer);
   nanovdb::GridHandle<nanovdb::HostBuffer> handle = std::move(nvdbBuffer);
+
+  LOG_OMP(GridHandle);
 
   std::ofstream os(g_outFileName, std::ios::out | std::ios::binary);
   nanovdb::io::Codec       codec = nanovdb::io::Codec::NONE;// compression codec for the file
   nanovdb::io::writeGrid(os, handle, codec);
+
+  std::free(alignedBuffer);
+
+  LOG_OMP(writeGrid);
 
   return 0;
 }

@@ -16,6 +16,8 @@
 #include "math_.h"
 #include "nanovdb_convert.h"
 
+#include <omp.h>
+
 using int3 = math::vec3i;
 using float2 = math::vec2f;
 using float3 = math::vec3f;
@@ -82,17 +84,22 @@ float getValue(const char *input, int x, int y, int z)
 
 inline
 float2 computeValueRange(const char *input, int3 lower, int3 upper)
-{
-  float2 valueRange(1e31f,-1e31f);
+{  
+  float min_ = 1e31f;
+  float max_ = -1e31f;
+
+#pragma omp parallel for reduction(min:min_) reduction(max:max_)
   for (int z=lower.z; z<upper.z; ++z) {
     for (int y=lower.y; y<upper.y; ++y) {
       for (int x=lower.x; x<upper.x; ++x) {
         const float value = getValue(input, x, y, z);
-        valueRange.x = fminf(valueRange.x,value);
-        valueRange.y = fmaxf(valueRange.y,value);
+        min_ = fminf(min_,value);
+        max_ = fmaxf(max_,value);
       }
     }
   }
+
+  float2 valueRange(min_,max_);
   return valueRange;
 }
 
@@ -220,31 +227,58 @@ void compressOpenVDB(const char *input)
   g_sparseGrids.push_back(grid);
 }
 
+#define LOG_START double _t = omp_get_wtime();
+#define LOG_OMP(name) printf("%s: %f\n", #name, omp_get_wtime() - _t);
+
 // our strategy:
 static
 void compressOpenVDB_v2(const char *input)
 {
+  LOG_START;
+  LOG_OMP(compressOpenVDB_v2);
+
   double targetCompressionRate = g_compressionRate;
 
   float2 valueRange = computeValueRange(input, int3(0), g_dims);
   std::cout << "Computed value range: " << valueRange << '\n';
+
+  LOG_OMP(computeValueRange);
 
   // compute histogram:
   #define N (1<<10)
   uint64_t counts[N];
   std::memset(counts,0,sizeof(counts));
 
-  for (int z=0; z<g_dims.z; ++z) {
-    for (int y=0; y<g_dims.y; ++y) {
-      for (int x=0; x<g_dims.x; ++x) {
-        float value = getValue(input, x, y, z);
-        value -= valueRange.x;
-        value /= valueRange.y-valueRange.x;
-        value *= N-1;
-        counts[int(value)]++;
+  #pragma omp parallel
+  {
+      uint64_t localCounts[N] = {0};
+
+      #pragma omp for collapse(3)
+      for (int z = 0; z < g_dims.z; ++z) {
+          for (int y = 0; y < g_dims.y; ++y) {
+              for (int x = 0; x < g_dims.x; ++x) {
+                  float value = getValue(input, x, y, z);
+                  value -= valueRange.x;
+                  value /= (valueRange.y - valueRange.x);
+                  value *= (N - 1);
+                  int index = int(value);
+
+                  // Update the thread-local counts
+                  localCounts[index]++;
+              }
+          }
       }
-    }
+
+      // Combine local counts into the global counts array
+      #pragma omp critical
+      {
+          for (int i = 0; i < N; ++i) {
+              counts[i] += localCounts[i];
+          }
+      }
   }
+
+  LOG_OMP(counts);
 
   int maxIndex = -1;
   uint64_t maxCount = 0;
@@ -254,6 +288,8 @@ void compressOpenVDB_v2(const char *input)
       maxCount = counts[i];
     }
   }
+
+  LOG_OMP(maxCount);
 
   // That's the value for maxIndex; the one that occurs most
   // often in our data:
@@ -269,6 +305,8 @@ void compressOpenVDB_v2(const char *input)
   auto distance3 = [](float scalar, float2 scalarRange) // to the median of the two extrema
   { return fabsf((scalarRange.x+scalarRange.y)*0.5f-scalar); };
 
+  LOG_OMP(distances);
+
   // VDB conversion:
   openvdb::initialize();
 
@@ -277,6 +315,8 @@ void compressOpenVDB_v2(const char *input)
 
   using FloatTree = openvdb::tree::Tree4<float, 5, 4, 3>::Type;
   openvdb::FloatGrid::Ptr grid = openvdb::FloatGrid::create(maxValue);
+
+  LOG_OMP(FloatGrid_create);
 
   // in the following we assume a 5,4,3 layout, i.e., leaf nodes are 2^3 voxel grids
   auto &tree = grid->tree();
@@ -294,9 +334,14 @@ void compressOpenVDB_v2(const char *input)
                  div_up(g_dims.y,brickSize),
                  div_up(g_dims.z,brickSize));
 
+  LOG_OMP(numBricks);
+
   struct BrickRef { int3 brickID; float2 valueRange; };
   std::vector<BrickRef> brickRefs(numBricks.x*size_t(numBricks.y)*numBricks.z);
 
+  LOG_OMP(brickRefs_create);
+
+#pragma omp parallel for
   for (int bz=0; bz<numBricks.z; ++bz) {
     for (int by=0; by<numBricks.y; ++by) {
       for (int bx=0; bx<numBricks.x; ++bx) {
@@ -314,10 +359,14 @@ void compressOpenVDB_v2(const char *input)
     }
   }
 
+  LOG_OMP(brickRefs_fill);
+
   std::sort(brickRefs.begin(),
             brickRefs.end(),
             [&](const BrickRef &a, const BrickRef &b)
             { return distance2(maxValue, a.valueRange) < distance2(maxValue, b.valueRange); });
+
+  LOG_OMP(std_sort);
 
   // std::cout << brickRefs[0].valueRange << '\n';
   // std::cout << brickRefs[1].valueRange << '\n';
@@ -343,8 +392,9 @@ void compressOpenVDB_v2(const char *input)
       }
     }
   }
-
+  LOG_OMP(tree_addTile);
   tree.prune();
+  LOG_OMP(tree_prune);
 
   std::cout << "activeVoxelCount: " << tree.activeVoxelCount() << '\n';
   //std::cout << "activeTileCount: " << tree.activeTileCount() << '\n';
@@ -352,6 +402,8 @@ void compressOpenVDB_v2(const char *input)
     << double(tree.activeVoxelCount()/double(g_dims.x*size_t(g_dims.y)*g_dims.z)) << '\n';
 
   g_sparseGrids.push_back(grid);
+
+  LOG_OMP(g_sparseGrids_push_back);
 }
 
 //-----------------------------------------------------------------------------
