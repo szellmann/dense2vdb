@@ -217,6 +217,7 @@ void compressOpenVDB(const char *input)
   result->prune();
 
   openvdb::FloatGrid::Ptr grid = openvdb::FloatGrid::create(result);
+  grid->setName("density");
   g_sparseGrids.push_back(grid);
 }
 
@@ -277,6 +278,7 @@ void compressOpenVDB_v2(const char *input)
 
   using FloatTree = openvdb::tree::Tree4<float, 5, 4, 3>::Type;
   openvdb::FloatGrid::Ptr grid = openvdb::FloatGrid::create(maxValue);
+  grid->setName("density");
 
   // in the following we assume a 5,4,3 layout, i.e., leaf nodes are 2^3 voxel grids
   auto &tree = grid->tree();
@@ -335,6 +337,10 @@ void compressOpenVDB_v2(const char *input)
     int bz = ref.brickID.z;
     int3 lower = int3(bx,by,bz)*brickSize;
     int3 upper = int3(bx+1,by+1,bz+1)*brickSize;
+    upper.x = std::min(upper.x,g_dims.x);
+    upper.y = std::min(upper.y,g_dims.y);
+    upper.z = std::min(upper.z,g_dims.z);
+
     for (int z=lower.z; z<upper.z; ++z) {
       for (int y=lower.y; y<upper.y; ++y) {
         for (int x=lower.x; x<upper.x; ++x) {
