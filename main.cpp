@@ -162,15 +162,19 @@ int main(int argc, char **argv)
   uint64_t bufferSize;
   d2nvdbCompress(input.data(), &parms, nullptr, &bufferSize);
 
-  std::vector<char> buffer(bufferSize);
-  d2nvdbCompress(input.data(), &parms, buffer.data(), &bufferSize);
+  constexpr size_t alignment = 32;
+  char* alignedBuffer = (char*)std::aligned_alloc(alignment, bufferSize);
 
-  auto nvdbBuffer = nanovdb::HostBuffer::createFull(bufferSize, buffer.data()); // TODO: align!!
+  d2nvdbCompress(input.data(), &parms, alignedBuffer, &bufferSize);
+
+  auto nvdbBuffer = nanovdb::HostBuffer::createFull(bufferSize, alignedBuffer);
   nanovdb::GridHandle<nanovdb::HostBuffer> handle = std::move(nvdbBuffer);
 
   std::ofstream os(g_outFileName, std::ios::out | std::ios::binary);
   nanovdb::io::Codec       codec = nanovdb::io::Codec::NONE;// compression codec for the file
   nanovdb::io::writeGrid(os, handle, codec);
+
+  std::free(alignedBuffer);
 
   return 0;
 }
