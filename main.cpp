@@ -169,14 +169,14 @@ int main(int argc, char **argv)
   parms.compressionRate = g_compressionRate;
 
   uint64_t bufferSize;
-  d2nvdbCompress(input.data(), &parms, nullptr, &bufferSize);
+  d2nvdbCompress(input.data(), &parms, nullptr, &bufferSize, g_outFileName.c_str());
 
   LOG_OMP(d2nvdbCompress1);
 
   constexpr size_t alignment = 32;
   char* alignedBuffer = (char*)std::aligned_alloc(alignment, bufferSize);
 
-  d2nvdbCompress(input.data(), &parms, alignedBuffer, &bufferSize);
+  d2nvdbCompress(input.data(), &parms, alignedBuffer, &bufferSize, g_outFileName.c_str());
 
   LOG_OMP(d2nvdbCompress2);
 

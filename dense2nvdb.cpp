@@ -35,6 +35,8 @@ static double g_compressionRate{0.5};
 static float g_backgroundValue{NAN};
 static float g_tolerance{NAN};
 
+//#define USE_OMP
+
 //-----------------------------------------------------------------------------
 // Impl:
 //-----------------------------------------------------------------------------
@@ -82,6 +84,8 @@ float getValue(const char *input, int x, int y, int z)
   return value;
 }
 
+#ifdef USE_OMP
+
 inline
 float2 computeValueRange(const char *input, int3 lower, int3 upper)
 {  
@@ -102,6 +106,26 @@ float2 computeValueRange(const char *input, int3 lower, int3 upper)
   float2 valueRange(min_,max_);
   return valueRange;
 }
+
+#else
+
+inline
+float2 computeValueRange(const char *input, int3 lower, int3 upper)
+{
+  float2 valueRange(1e31f,-1e31f);
+  for (int z=lower.z; z<upper.z; ++z) {
+    for (int y=lower.y; y<upper.y; ++y) {
+      for (int x=lower.x; x<upper.x; ++x) {
+        const float value = getValue(input, x, y, z);
+        valueRange.x = fminf(valueRange.x,value);
+        valueRange.y = fmaxf(valueRange.y,value);
+      }
+    }
+  }
+  return valueRange;
+}
+
+#endif
 
 static
 bool populateState(const d2nvdbParams &params)
@@ -249,6 +273,7 @@ void compressOpenVDB_v2(const char *input)
   uint64_t counts[N];
   std::memset(counts,0,sizeof(counts));
 
+#ifdef USE_OMP
   #pragma omp parallel
   {
       uint64_t localCounts[N] = {0};
@@ -277,6 +302,19 @@ void compressOpenVDB_v2(const char *input)
           }
       }
   }
+#else
+  for (int z=0; z<g_dims.z; ++z) {
+    for (int y=0; y<g_dims.y; ++y) {
+      for (int x=0; x<g_dims.x; ++x) {
+        float value = getValue(input, x, y, z);
+        value -= valueRange.x;
+        value /= valueRange.y-valueRange.x;
+        value *= N-1;
+        counts[int(value)]++;
+      }
+    }
+  }
+#endif  
 
   LOG_OMP(counts);
 
@@ -315,6 +353,7 @@ void compressOpenVDB_v2(const char *input)
 
   using FloatTree = openvdb::tree::Tree4<float, 5, 4, 3>::Type;
   openvdb::FloatGrid::Ptr grid = openvdb::FloatGrid::create(maxValue);
+  grid->setName("density");
 
   LOG_OMP(FloatGrid_create);
 
@@ -341,7 +380,9 @@ void compressOpenVDB_v2(const char *input)
 
   LOG_OMP(brickRefs_create);
 
+#ifdef USE_OMP
 #pragma omp parallel for
+#endif
   for (int bz=0; bz<numBricks.z; ++bz) {
     for (int by=0; by<numBricks.y; ++by) {
       for (int bx=0; bx<numBricks.x; ++bx) {
@@ -413,7 +454,8 @@ void compressOpenVDB_v2(const char *input)
 void d2nvdbCompress(const char *raw_in,
                     d2nvdbParams *params,
                     char *nvdb_out,
-                    uint64_t *nvdb_size)
+                    uint64_t *nvdb_size,
+                    const char* filename)
 {
   if (!nvdb_out) {
     // that's the best we can do for now, is to compress
@@ -424,6 +466,10 @@ void d2nvdbCompress(const char *raw_in,
     if (populateState(*params)) {
       compressOpenVDB_v2(raw_in);
       if (!g_sparseGrids.empty()) {
+        if(filename != nullptr) {
+          std::string full_filepath = std::string(filename) + ".vdb";
+          openvdb::io::File(full_filepath).write(g_sparseGrids);
+        }
         auto handle = nanovdb_convert(&g_sparseGrids);
         g_nvdbGridData.resize(handle.buffer().size());
         memcpy(g_nvdbGridData.data(),

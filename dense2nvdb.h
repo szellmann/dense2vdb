@@ -20,7 +20,8 @@ typedef struct {
 void d2nvdbCompress(const char *raw_in,
                     d2nvdbParams *params,
                     char *nvdb_out,
-                    uint64_t *nvdb_size);
+                    uint64_t *nvdb_size,
+                    const char* filename = nullptr);
 
 #ifdef __cplusplus
 }
