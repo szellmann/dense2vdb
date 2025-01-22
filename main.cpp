@@ -245,6 +245,11 @@ int main(int argc, char **argv)
       }
 
       MPI_Wait(&request, MPI_STATUS_IGNORE);
+
+      MPI_Barrier(MPI_COMM_WORLD);
+      MPI_Finalize();
+
+      return 0;
   }
     
 #else
@@ -305,7 +310,8 @@ int main(int argc, char **argv)
   LOG_OMP(writeGrid);
 
 #ifdef USE_MPI
-    MPI_Finalize();
+  MPI_Barrier(MPI_COMM_WORLD);
+  MPI_Finalize();
 #endif
 
   return 0;
