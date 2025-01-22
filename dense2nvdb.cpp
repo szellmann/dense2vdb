@@ -35,7 +35,7 @@ static double g_compressionRate{0.5};
 static float g_backgroundValue{NAN};
 static float g_tolerance{NAN};
 
-//#define USE_OMP
+#define USE_OMP
 
 //-----------------------------------------------------------------------------
 // Impl:
@@ -248,11 +248,14 @@ void compressOpenVDB(const char *input)
   result->prune();
 
   openvdb::FloatGrid::Ptr grid = openvdb::FloatGrid::create(result);
+  grid->setName("density");
   g_sparseGrids.push_back(grid);
 }
 
 #define LOG_START double _t = omp_get_wtime();
 #define LOG_OMP(name) printf("%s: %f\n", #name, omp_get_wtime() - _t);
+
+std::string histogram_filename;
 
 // our strategy:
 static
@@ -315,6 +318,16 @@ void compressOpenVDB_v2(const char *input)
     }
   }
 #endif  
+
+#if 1
+if (histogram_filename.size() > 0) {
+  FILE *f = fopen(histogram_filename.c_str(),"wt+");
+  for (int i=0; i<N; ++i) {
+      fprintf(f, "%d;%lld\n", i, counts[i]);
+  }
+  fclose(f);
+}
+#endif
 
   LOG_OMP(counts);
 
@@ -425,6 +438,10 @@ void compressOpenVDB_v2(const char *input)
     int bz = ref.brickID.z;
     int3 lower = int3(bx,by,bz)*brickSize;
     int3 upper = int3(bx+1,by+1,bz+1)*brickSize;
+    upper.x = std::min(upper.x,g_dims.x);
+    upper.y = std::min(upper.y,g_dims.y);
+    upper.z = std::min(upper.z,g_dims.z);
+
     for (int z=lower.z; z<upper.z; ++z) {
       for (int y=lower.y; y<upper.y; ++y) {
         for (int x=lower.x; x<upper.x; ++x) {
@@ -464,12 +481,13 @@ void d2nvdbCompress(const char *raw_in,
     // to compress will populate that buffer _from the compressed
     // NVDB_!
     if (populateState(*params)) {
+      if(filename != nullptr) {
+        std::string full_filepath = std::string(filename) + ".vdb";
+        histogram_filename = std::string(filename) + ".txt";
+        openvdb::io::File(full_filepath).write(g_sparseGrids);
+      }      
       compressOpenVDB_v2(raw_in);
       if (!g_sparseGrids.empty()) {
-        if(filename != nullptr) {
-          std::string full_filepath = std::string(filename) + ".vdb";
-          openvdb::io::File(full_filepath).write(g_sparseGrids);
-        }
         auto handle = nanovdb_convert(&g_sparseGrids);
         g_nvdbGridData.resize(handle.buffer().size());
         memcpy(g_nvdbGridData.data(),
