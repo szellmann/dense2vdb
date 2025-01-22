@@ -3,6 +3,18 @@
 
 #include <stdint.h>
 
+#if defined(USE_LOG) || defined(USE_OPENMP)
+# include <omp.h>
+#endif
+
+#ifdef USE_LOG
+# define LOG_START double _t = omp_get_wtime();
+# define LOG_OMP(name) printf("LOG: %s: %f [s](%s, %d)\n", #name, omp_get_wtime() - _t, __FUNCTION__, __LINE__);
+#else
+# define LOG_START
+# define LOG_OMP(name)
+#endif
+
 #ifdef __cplusplus
 extern "C"
 {

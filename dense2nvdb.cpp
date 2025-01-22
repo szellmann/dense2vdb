@@ -16,8 +16,6 @@
 #include "math_.h"
 #include "nanovdb_convert.h"
 
-#include <omp.h>
-
 using int3 = math::vec3i;
 using float2 = math::vec2f;
 using float3 = math::vec3f;
@@ -34,8 +32,6 @@ static double g_compressionRate{0.5};
 // outdated, we're keeping these for testing though:
 static float g_backgroundValue{NAN};
 static float g_tolerance{NAN};
-
-#define USE_OMP
 
 //-----------------------------------------------------------------------------
 // Impl:
@@ -84,7 +80,7 @@ float getValue(const char *input, int x, int y, int z)
   return value;
 }
 
-#ifdef USE_OMP
+#ifdef USE_OPENMP
 
 inline
 float2 computeValueRange(const char *input, int3 lower, int3 upper)
@@ -252,10 +248,9 @@ void compressOpenVDB(const char *input)
   g_sparseGrids.push_back(grid);
 }
 
-#define LOG_START double _t = omp_get_wtime();
-#define LOG_OMP(name) printf("%s: %f\n", #name, omp_get_wtime() - _t);
-
+#ifdef EXPORT_HISTOGRAM
 std::string histogram_filename;
+#endif
 
 // our strategy:
 static
@@ -276,7 +271,7 @@ void compressOpenVDB_v2(const char *input)
   uint64_t counts[N];
   std::memset(counts,0,sizeof(counts));
 
-#ifdef USE_OMP
+#ifdef USE_OPENMP
   #pragma omp parallel
   {
       uint64_t localCounts[N] = {0};
@@ -319,7 +314,7 @@ void compressOpenVDB_v2(const char *input)
   }
 #endif  
 
-#if 1
+#ifdef EXPORT_HISTOGRAM
 if (histogram_filename.size() > 0) {
   FILE *f = fopen(histogram_filename.c_str(),"wt+");
   for (int i=0; i<N; ++i) {
@@ -372,10 +367,11 @@ if (histogram_filename.size() > 0) {
 
   // in the following we assume a 5,4,3 layout, i.e., leaf nodes are 2^3 voxel grids
   auto &tree = grid->tree();
+  openvdb::tree::ValueAccessor<FloatTree> acc_tree(tree);
   // we want a full domain box, so we set the voxels at
   // the extrema to their actual values and *activate them*:
-  tree.addTile(0, openvdb::math::Coord(0, 0, 0), getValue(input, 0, 0, 0), true);
-  tree.addTile(0, openvdb::math::Coord(g_dims.x-1, g_dims.y-1, g_dims.z-1),
+  acc_tree.addTile(0, openvdb::math::Coord(0, 0, 0), getValue(input, 0, 0, 0), true);
+  acc_tree.addTile(0, openvdb::math::Coord(g_dims.x-1, g_dims.y-1, g_dims.z-1),
       getValue(input, g_dims.x-1, g_dims.y-1, g_dims.z-1), true);
 
   auto div_up = [](int a, int b) { return (a + b - 1) / b; };
@@ -393,7 +389,7 @@ if (histogram_filename.size() > 0) {
 
   LOG_OMP(brickRefs_create);
 
-#ifdef USE_OMP
+#ifdef USE_OPENMP
 #pragma omp parallel for
 #endif
   for (int bz=0; bz<numBricks.z; ++bz) {
@@ -431,7 +427,17 @@ if (histogram_filename.size() > 0) {
   std::cout << "Activating " << numBricksToActivate << " out of " << brickRefs.size()
     << " level-" << (level-1) << " bricks\n";
 
-  for (size_t i=brickRefs.size()-1; i>=brickRefs.size()-numBricksToActivate; i--) {
+#ifdef USE_OPENMP
+# pragma omp parallel
+{
+#endif  
+  openvdb::tree::ValueAccessor<FloatTree> acc_tree_thread(tree);  
+
+#ifdef USE_OPENMP
+# pragma omp for
+#endif
+  //for (size_t i=brickRefs.size()-1; i>=brickRefs.size()-numBricksToActivate; i--) {
+  for (size_t i = brickRefs.size() - numBricksToActivate; i < brickRefs.size(); ++i) {  
     const BrickRef &ref = brickRefs[i];
     int bx = ref.brickID.x;
     int by = ref.brickID.y;
@@ -445,13 +451,19 @@ if (histogram_filename.size() > 0) {
     for (int z=lower.z; z<upper.z; ++z) {
       for (int y=lower.y; y<upper.y; ++y) {
         for (int x=lower.x; x<upper.x; ++x) {
-          tree.addTile(0, openvdb::math::Coord(x,y,z), getValue(input, x, y, z), true);
+          acc_tree_thread.addTile(0, openvdb::math::Coord(x,y,z), getValue(input, x, y, z), true);
         }
       }
     }
   }
+
+#ifdef USE_OPENMP
+}
+#endif
+
   LOG_OMP(tree_addTile);
-  tree.prune();
+  //tree.prune();
+  openvdb::tools::prune(tree); // multi-threaded
   LOG_OMP(tree_prune);
 
   std::cout << "activeVoxelCount: " << tree.activeVoxelCount() << '\n';
@@ -481,12 +493,18 @@ void d2nvdbCompress(const char *raw_in,
     // to compress will populate that buffer _from the compressed
     // NVDB_!
     if (populateState(*params)) {
+
+#ifdef EXPORT_HISTOGRAM        
+      if(filename != nullptr)
+        histogram_filename = std::string(filename) + ".txt";
+#endif
+      compressOpenVDB_v2(raw_in);
+
       if(filename != nullptr) {
         std::string full_filepath = std::string(filename) + ".vdb";
-        histogram_filename = std::string(filename) + ".txt";
         openvdb::io::File(full_filepath).write(g_sparseGrids);
-      }      
-      compressOpenVDB_v2(raw_in);
+      }
+
       if (!g_sparseGrids.empty()) {
         auto handle = nanovdb_convert(&g_sparseGrids);
         g_nvdbGridData.resize(handle.buffer().size());

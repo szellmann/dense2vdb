@@ -13,10 +13,6 @@
 #include "nanovdb_convert.h"
 #include "dense2nvdb.h"
 
-#include <omp.h>
-#define LOG_START double _t = omp_get_wtime();
-#define LOG_OMP(name) printf("%s: %f\n", #name, omp_get_wtime() - _t);
-
 using int3 = math::vec3i;
 using float2 = math::vec2f;
 using float3 = math::vec3f;
@@ -169,14 +165,18 @@ int main(int argc, char **argv)
   parms.compressionRate = g_compressionRate;
 
   uint64_t bufferSize;
+#ifdef EXPORT_VDB
   d2nvdbCompress(input.data(), &parms, nullptr, &bufferSize, g_outFileName.c_str());
+#else  
+  d2nvdbCompress(input.data(), &parms, nullptr, &bufferSize);
+#endif
 
   LOG_OMP(d2nvdbCompress1);
 
   constexpr size_t alignment = 32;
   char* alignedBuffer = (char*)std::aligned_alloc(alignment, bufferSize);
 
-  d2nvdbCompress(input.data(), &parms, alignedBuffer, &bufferSize, g_outFileName.c_str());
+  d2nvdbCompress(input.data(), &parms, alignedBuffer, &bufferSize);
 
   LOG_OMP(d2nvdbCompress2);
 
