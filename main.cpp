@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstring>
 #include <string>
+#include <iostream>
 #include <fstream>
 #include <vector>
 // openvdb
@@ -12,6 +13,10 @@
 #include "math_.h"
 #include "nanovdb_convert.h"
 #include "dense2nvdb.h"
+
+#ifdef USE_MPI
+# include <mpi.h>
+#endif
 
 using int3 = math::vec3i;
 using float2 = math::vec2f;
@@ -27,6 +32,19 @@ static double g_compressionRate{0.5};
 // outdated, we're keeping these for testing though:
 static float g_backgroundValue{NAN};
 static float g_tolerance{NAN};
+
+#ifdef USE_MPI
+void read_binary_file(const std::string& filename, std::vector<char>& data, size_t offset, size_t size) {
+    std::ifstream file(filename, std::ios::binary);
+    if (!file) {
+        std::cerr << "Error opening file: " << filename << std::endl;
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+    file.seekg(offset, std::ios::beg);
+    data.resize(size);
+    file.read(data.data(), size);
+}
+#endif
 
 static bool parseCommandLine(int argc, char **argv)
 {
@@ -117,41 +135,107 @@ int main(int argc, char **argv)
 {
   LOG_START;
 
+#ifdef USE_MPI
+    MPI_Init(&argc, &argv);
+
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+#endif  
+
   if (!parseCommandLine(argc, argv)) {
     printUsage();
+#ifdef USE_MPI
+    MPI_Finalize();
+#endif
     exit(1);
   }
 
   if (!validateInput()) {
     printUsage();
-    exit(1);
-  }
-
-  std::ifstream in(g_inFileName);
-
-  if (!in.good()) {
-    printUsage();
+#ifdef USE_MPI
+    MPI_Finalize();
+#endif    
     exit(1);
   }
 
   std::vector<char> input;
+  size_t file_size = 0;
 
   if (g_type == "byte") {
-    input.resize(sizeof(char) * g_dims.x * size_t(g_dims.y) * g_dims.z);
+    file_size = sizeof(char) * g_dims.x * size_t(g_dims.y) * g_dims.z;
   }
   else if (g_type == "float") {
-    input.resize(sizeof(float) * g_dims.x * size_t(g_dims.y) * g_dims.z);
+    file_size = sizeof(float) * g_dims.x * size_t(g_dims.y) * g_dims.z;
   }
 
-  LOG_OMP(input_resize);
-
-  if (input.empty()) {
+  if (file_size == 0) {
     printUsage();
+#ifdef USE_MPI
+    MPI_Finalize();
+#endif    
     exit(1);
   }
 
+#ifdef USE_MPI
+    // Compute local chunk size
+    size_t chunk_size = file_size / size;
+    size_t remainder = file_size % size;
+    size_t local_size = (rank < remainder) ? (chunk_size + 1) : chunk_size;
+    size_t offset = rank * chunk_size + std::min<size_t>(rank, remainder);
+
+    // Each process reads its chunk
+    std::vector<char> local_data;
+    read_binary_file(g_inFileName, local_data, offset, local_size);
+
+    LOG_OMP(in_read);
+
+    // Gather sizes at rank 0
+    std::vector<int> recv_counts(size);
+    std::vector<int> displacements(size);
+    int local_size_int = static_cast<int>(local_size);
+    
+    MPI_Gather(&local_size_int, 1, MPI_INT, recv_counts.data(), 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+    if (rank == 0) {
+        displacements[0] = 0;
+        for (int i = 1; i < size; ++i) {
+            displacements[i] = displacements[i - 1] + recv_counts[i - 1];
+        }
+    }
+
+    LOG_OMP(displacements);
+
+    // Rank 0 allocates a buffer for the complete file
+    if (rank == 0) {
+        input.resize(file_size);
+    }
+
+    LOG_OMP(input_resize);
+
+    // Gather all data at rank 0
+    MPI_Gatherv(local_data.data(), local_size_int, MPI_CHAR,
+                input.data(), recv_counts.data(), displacements.data(),
+                MPI_CHAR, 0, MPI_COMM_WORLD);
+
+    LOG_OMP(MPI_Gatherv);
+    
+#else
+  std::ifstream in(g_inFileName);
+
+  if (!in.good()) {
+    printUsage();
+#ifdef USE_MPI
+    MPI_Finalize();
+#endif    
+    exit(1);
+  }
+
+  input.resize(file_size);
+  LOG_OMP(input_resize);  
   in.read(input.data(), input.size());
   LOG_OMP(in_read);
+#endif    
 
   std::cout << "Loading file: " << g_inFileName << '\n';
   std::cout << "Dims: " << g_dims.x << ':' << g_dims.y << ':' << g_dims.z << '\n';
@@ -192,6 +276,10 @@ int main(int argc, char **argv)
   std::free(alignedBuffer);
 
   LOG_OMP(writeGrid);
+
+#ifdef USE_MPI
+    MPI_Finalize();
+#endif
 
   return 0;
 }
