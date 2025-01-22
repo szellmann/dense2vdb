@@ -200,7 +200,9 @@ int main(int argc, char **argv)
   // Rank 0 receives all chunks asynchronously
   if (rank == 0) {
       input.resize(file_size);
+      LOG_OMP(input_resize);
       read_binary_file(g_inFileName, input, offset, local_size);
+      LOG_OMP(read_binary_file);
 
       std::vector<MPI_Request> requests(size - 1);
 
@@ -222,8 +224,8 @@ int main(int argc, char **argv)
 
       // Wait for all receives to complete
       MPI_Waitall(size - 1, requests.data(), MPI_STATUSES_IGNORE);
-
-      std::cout << "Rank 0 has assembled the complete file into memory." << std::endl;
+      LOG_OMP(MPI_Waitall);
+      
       std::cout << "File size: " << input.size() << " bytes" << std::endl;
   }
   else {
