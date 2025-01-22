@@ -6,6 +6,8 @@ set(CMAKE_BUILD_TYPE_INIT Release)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake")
+
 # Establish project
 
 project(dense2vdb LANGUAGES C CXX)
@@ -38,6 +40,20 @@ endif()
 
 if(USE_OPENMP OR USE_LOG)
   find_package(OpenMP REQUIRED)
+
+  if(OPENMP_FOUND)
+    string(APPEND CMAKE_EXE_LINKER_FLAGS " ${OpenMP_LINKER_FLAGS}")
+    string(APPEND CMAKE_MODULE_LINKER_FLAGS " ${OpenMP_LINKER_FLAGS}")
+
+    if(WIN32)
+        string(APPEND CMAKE_C_FLAGS " /openmp:llvm ")
+        string(APPEND CMAKE_CXX_FLAGS " /openmp:llvm /bigobj")
+    else()
+        string(APPEND CMAKE_C_FLAGS " ${OpenMP_C_FLAGS}")
+        string(APPEND CMAKE_CXX_FLAGS " ${OpenMP_CXX_FLAGS}")
+    endif()
+  endif()
+
 endif()
 
 if(USE_MPI)

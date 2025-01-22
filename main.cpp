@@ -5,6 +5,7 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
+#include <cstdlib>
 // openvdb
 #include <openvdb/openvdb.h>
 #include <openvdb/tools/DenseSparseTools.h>
@@ -16,6 +17,10 @@
 
 #ifdef USE_MPI
 # include <mpi.h>
+#endif
+
+#ifdef _MSC_VER
+# include <malloc.h>  // MSVC uses _aligned_malloc
 #endif
 
 using int3 = math::vec3i;
@@ -33,15 +38,23 @@ static double g_compressionRate{0.5};
 static float g_backgroundValue{NAN};
 static float g_tolerance{NAN};
 
+static void* aligned_allocate(size_t alignment, size_t size) {
+#ifdef _MSC_VER
+    return _aligned_malloc(size, alignment);
+#else
+    return std::aligned_alloc(alignment, size);
+#endif
+}
+
 #ifdef USE_MPI
-void read_binary_file(const std::string& filename, std::vector<char>& data, size_t offset, size_t size) {
+const size_t MAX_MPI_TRANSFER = std::numeric_limits<int>::max(); // 2GB limit per MPI send/recv
+static void read_binary_file(const std::string& filename, std::vector<char>& data, size_t offset, size_t size) {
     std::ifstream file(filename, std::ios::binary);
     if (!file) {
         std::cerr << "Error opening file: " << filename << std::endl;
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
-    file.seekg(offset, std::ios::beg);
-    data.resize(size);
+    file.seekg(offset, std::ios::beg);    
     file.read(data.data(), size);
 }
 #endif
@@ -178,47 +191,61 @@ int main(int argc, char **argv)
   }
 
 #ifdef USE_MPI
-    // Compute local chunk size
-    size_t chunk_size = file_size / size;
-    size_t remainder = file_size % size;
-    size_t local_size = (rank < remainder) ? (chunk_size + 1) : chunk_size;
-    size_t offset = rank * chunk_size + std::min<size_t>(rank, remainder);
+  // Compute local chunk size for each process
+  size_t chunk_size = file_size / size;
+  size_t remainder = file_size % size;
+  size_t local_size = (rank < remainder) ? (chunk_size + 1) : chunk_size;
+  size_t offset = rank * chunk_size + std::min<size_t>(rank, remainder);
 
-    // Each process reads its chunk
-    std::vector<char> local_data;
-    read_binary_file(g_inFileName, local_data, offset, local_size);
+  // Rank 0 receives all chunks asynchronously
+  if (rank == 0) {
+      input.resize(file_size);
+      read_binary_file(g_inFileName, input, offset, local_size);
 
-    LOG_OMP(in_read);
+      std::vector<MPI_Request> requests(size - 1);
 
-    // Gather sizes at rank 0
-    std::vector<int> recv_counts(size);
-    std::vector<int> displacements(size);
-    int local_size_int = static_cast<int>(local_size);
-    
-    MPI_Gather(&local_size_int, 1, MPI_INT, recv_counts.data(), 1, MPI_INT, 0, MPI_COMM_WORLD);
+      // Receive data in chunks using multiple MPI_Irecv calls if needed
+      size_t recv_offset = local_size;
+      for (int src = 1; src < size; ++src) {
+          size_t recv_size = (src < remainder) ? (chunk_size + 1) : chunk_size;
+          size_t num_chunks = (recv_size + MAX_MPI_TRANSFER - 1) / MAX_MPI_TRANSFER; // Number of 2GB chunks
 
-    if (rank == 0) {
-        displacements[0] = 0;
-        for (int i = 1; i < size; ++i) {
-            displacements[i] = displacements[i - 1] + recv_counts[i - 1];
-        }
-    }
+          for (size_t chunk = 0; chunk < num_chunks; ++chunk) {
+              size_t chunk_offset = recv_offset + chunk * MAX_MPI_TRANSFER;
+              size_t chunk_size = std::min(MAX_MPI_TRANSFER, recv_size - chunk * MAX_MPI_TRANSFER);
 
-    LOG_OMP(displacements);
+              MPI_Irecv(input.data() + chunk_offset, static_cast<int>(chunk_size),
+                  MPI_CHAR, src, chunk, MPI_COMM_WORLD, &requests[src - 1]);
+          }
+          recv_offset += recv_size;
+      }
 
-    // Rank 0 allocates a buffer for the complete file
-    if (rank == 0) {
-        input.resize(file_size);
-    }
+      // Wait for all receives to complete
+      MPI_Waitall(size - 1, requests.data(), MPI_STATUSES_IGNORE);
 
-    LOG_OMP(input_resize);
+      std::cout << "Rank 0 has assembled the complete file into memory." << std::endl;
+      std::cout << "File size: " << input.size() << " bytes" << std::endl;
+  }
+  else {
+      // Each process reads its chunk
+      std::vector<char> local_data;
+      local_data.resize(local_size);
+      read_binary_file(g_inFileName, local_data, offset, local_size);
 
-    // Gather all data at rank 0
-    MPI_Gatherv(local_data.data(), local_size_int, MPI_CHAR,
-                input.data(), recv_counts.data(), displacements.data(),
-                MPI_CHAR, 0, MPI_COMM_WORLD);
+      // Send data in chunks using multiple MPI_Isend calls if needed
+      MPI_Request request;
+      size_t num_chunks = (local_size + MAX_MPI_TRANSFER - 1) / MAX_MPI_TRANSFER; // Number of 2GB chunks
 
-    LOG_OMP(MPI_Gatherv);
+      for (size_t chunk = 0; chunk < num_chunks; ++chunk) {
+          size_t chunk_offset = chunk * MAX_MPI_TRANSFER;
+          size_t chunk_size = std::min(MAX_MPI_TRANSFER, local_size - chunk_offset);
+
+          MPI_Isend(local_data.data() + chunk_offset, static_cast<int>(chunk_size),
+              MPI_CHAR, 0, chunk, MPI_COMM_WORLD, &request);
+      }
+
+      MPI_Wait(&request, MPI_STATUS_IGNORE);
+  }
     
 #else
   std::ifstream in(g_inFileName);
@@ -258,7 +285,7 @@ int main(int argc, char **argv)
   LOG_OMP(d2nvdbCompress1);
 
   constexpr size_t alignment = 32;
-  char* alignedBuffer = (char*)std::aligned_alloc(alignment, bufferSize);
+  char* alignedBuffer = (char*)aligned_allocate(alignment, bufferSize);
 
   d2nvdbCompress(input.data(), &parms, alignedBuffer, &bufferSize);
 

@@ -257,7 +257,6 @@ static
 void compressOpenVDB_v2(const char *input)
 {
   LOG_START;
-  LOG_OMP(compressOpenVDB_v2);
 
   double targetCompressionRate = g_compressionRate;
 
