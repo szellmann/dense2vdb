@@ -1,4 +1,5 @@
 // std
+#include <cfloat>
 #include <cmath>
 #include <cstring>
 #include <string>
@@ -24,6 +25,7 @@ static std::string g_outFileName;
 static int3 g_dims{0,0,0};
 static std::string g_type = "float";
 static double g_compressionRate{0.5};
+static bool g_stats{false};
 // outdated, we're keeping these for testing though:
 static float g_backgroundValue{NAN};
 static float g_tolerance{NAN};
@@ -47,6 +49,8 @@ static bool parseCommandLine(int argc, char **argv)
       g_backgroundValue = atof(argv[++i]);
     else if (arg == "-tolerance")
       g_tolerance = atof(argv[++i]);
+    else if (arg == "-psnr")
+      g_stats = true;
     /* END deprecated */
     else if (arg[0] != '-')
       g_inFileName = arg;
@@ -67,7 +71,7 @@ static bool validateInput()
 
 static void printUsage()
 {
-  std::cerr << "./app in.raw -dims w h d -type {byte|short|float} [-background <float-val> -tolerance <float-val>] -o out.vdb\n";
+  std::cerr << "./app in.raw -dims w h d -type {byte|short|float} [-c <float-val> -stats] -o out.vdb\n";
 }
 
 class FloatRule
@@ -111,6 +115,65 @@ float getValue(const char *input, int x, int y, int z)
     value = inVoxels[x+y*g_dims.x+z*size_t(g_dims.x)*g_dims.y];
   }
   return value;
+}
+
+inline
+float mapValue(float value, float minValue, float maxValue)
+{
+  return (value-minValue)/(maxValue-minValue);
+}
+
+struct Stats
+{
+  float minValue{FLT_MAX}, maxValue{-FLT_MAX};
+  float minVDB{FLT_MAX}, maxVDB{-FLT_MAX};
+  double mse{0.0};
+  double snr{0.0};
+};
+
+static
+Stats computeStats(const char *input, nanovdb::NanoGrid<float> *nvdb)
+{
+  Stats res;
+  auto acc = nvdb->getAccessor();
+
+  // compute min/max's
+  for (int z=0; z<g_dims.z; ++z) {
+    for (int y=0; y<g_dims.y; ++y) {
+      for (int x=0; x<g_dims.x; ++x) {
+        float value0 = getValue(input,x,y,z);
+        res.minValue = fminf(res.minValue,value0);
+        res.maxValue = fmaxf(res.maxValue,value0);
+
+        float value1 = acc.getValue(nanovdb::Coord(x,y,z));
+        res.minVDB = fminf(res.minVDB,value1);
+        res.maxVDB = fmaxf(res.maxVDB,value1);
+      }
+    }
+  }
+
+  double sumSquared{0.0};
+  double sumSquaredErr{0.0};
+  for (int z=0; z<g_dims.z; ++z) {
+    for (int y=0; y<g_dims.y; ++y) {
+      for (int x=0; x<g_dims.x; ++x) {
+        float value0 = mapValue(getValue(input,x,y,z), res.minValue, res.maxValue);
+        float value1
+          = mapValue(acc.getValue(nanovdb::Coord(x,y,z)), res.minVDB, res.maxVDB);
+        double sqr = double(value0) * double(value0);
+        sumSquared += sqr;
+        double diff = double(value0) - double(value1);
+        sumSquaredErr += diff * diff;
+      }
+    }
+  }
+  size_t N = g_dims.x * size_t(g_dims.y) * g_dims.z;
+  res.mse = sumSquaredErr / N;
+  double signalMean = sumSquared / N;
+  double noiseMean = res.mse;
+  if (noiseMean == 0.0) res.snr = INFINITY;
+  else res.snr = 20*log10(sqrt(signalMean)/sqrt(noiseMean));
+  return res;
 }
 
 int main(int argc, char **argv)
@@ -169,6 +232,14 @@ int main(int argc, char **argv)
 
   auto nvdbBuffer = nanovdb::HostBuffer::createFull(bufferSize, alignedBuffer);
   nanovdb::GridHandle<nanovdb::HostBuffer> handle = std::move(nvdbBuffer);
+
+  if (g_stats) {
+    auto s = computeStats(input.data(), handle.grid<float>());
+    std::cout << "min/max (in) ....: [" << s.minValue << ',' << s.maxValue << "]\n";
+    std::cout << "min/max (out) ...: [" << s.minVDB << ',' << s.maxVDB << "]\n";
+    std::cout << "MSE .............: " << s.mse << '\n';
+    std::cout << "SNR .............: " << s.snr << '\n';
+  }
 
   std::ofstream os(g_outFileName, std::ios::out | std::ios::binary);
   nanovdb::io::Codec       codec = nanovdb::io::Codec::NONE;// compression codec for the file
