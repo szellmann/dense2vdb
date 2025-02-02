@@ -49,7 +49,7 @@ static bool parseCommandLine(int argc, char **argv)
       g_backgroundValue = atof(argv[++i]);
     else if (arg == "-tolerance")
       g_tolerance = atof(argv[++i]);
-    else if (arg == "-psnr")
+    else if (arg == "-stats")
       g_stats = true;
     /* END deprecated */
     else if (arg[0] != '-')
