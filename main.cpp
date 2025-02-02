@@ -201,7 +201,7 @@ std::vector<uchar> zfpCompress(std::vector<float> &input)
   zfp_type type = zfp_type_float;
   zfp_field* field = zfp_field_3d(input.data(), type, g_dims.x, g_dims.y, g_dims.z); 
   zfp_stream* zfp = zfp_stream_open(NULL);
-  zfp_stream_set_rate(zfp, g_compressionRate, type, dims, 0);
+  zfp_stream_set_rate(zfp, g_compressionRate*8/*8 bits*/, type, dims, 0);
   //zfp_stream_set_precision(zfp, precision, type);
   //zfp_stream_set_accuracy(zfp, tolerance, type);
   size_t bufsize = zfp_stream_maximum_size(zfp, field);
@@ -222,7 +222,7 @@ std::vector<float> zfpDecompress(std::vector<uchar> &buffer)
   zfp_type type = zfp_type_float;
   zfp_field* field = zfp_field_3d(result.data(), type, g_dims.x, g_dims.y, g_dims.z); 
   zfp_stream* zfp = zfp_stream_open(NULL);
-  zfp_stream_set_rate(zfp, g_compressionRate, type, dims, 0);
+  zfp_stream_set_rate(zfp, g_compressionRate*8/* bits*/, type, dims, 0);
   bitstream* stream = stream_open(buffer.data(), buffer.size());
   zfp_stream_set_bit_stream(zfp, stream);
   zfp_stream_rewind(zfp);
