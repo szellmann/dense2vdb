@@ -41,6 +41,7 @@ static std::string g_type = "float";
 static double g_compressionRate{0.5};
 static bool g_stats{false};
 static bool g_zfp{false};
+static bool g_verbose{false};
 // outdated, we're keeping these for testing though:
 static float g_backgroundValue{NAN};
 static float g_tolerance{NAN};
@@ -89,6 +90,8 @@ static bool parseCommandLine(int argc, char **argv)
       g_backgroundValue = atof(argv[++i]);
     else if (arg == "-tolerance")
       g_tolerance = atof(argv[++i]);
+    else if (arg == "-v" || arg == "-verbose")
+      g_verbose = true;
     /* END deprecated */
     else if (arg[0] != '-')
       g_inFileName = arg;
@@ -305,6 +308,10 @@ int main(int argc, char **argv)
     MPI_Finalize();
 #endif    
     exit(1);
+  }
+
+  if (g_verbose) {
+    std::cout << "OpenVDB Version: "  << openvdb::OPENVDB_LIBRARY_VERSION << '\n';
   }
 
   std::vector<char> input;
