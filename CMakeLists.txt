@@ -83,6 +83,8 @@ endif()
 
 # Compressor executable
 
+find_package(zfp)
+
 add_executable(compress_${PROJECT_NAME})
 target_sources(compress_${PROJECT_NAME} PRIVATE main.cpp)
 target_link_libraries(compress_${PROJECT_NAME} PRIVATE ${PROJECT_NAME})
@@ -94,4 +96,9 @@ endif()
 if(USE_MPI)
   target_include_directories(compress_${PROJECT_NAME} PRIVATE ${MPI_INCLUDE_PATH})
   target_link_libraries(compress_${PROJECT_NAME} PUBLIC MPI::MPI_CXX)
+endif()
+
+if(TARGET zfp::zfp)
+  target_compile_definitions(compress_${PROJECT_NAME} PRIVATE WITH_ZFP=1)
+  target_link_libraries(compress_${PROJECT_NAME} PRIVATE zfp::zfp)
 endif()
