@@ -187,23 +187,40 @@ Stats computeStats(const char *input, Compressed comp)
 {
   Stats res;
 
+  float minValue = FLT_MAX;
+  float maxValue = -FLT_MAX;
+  float minVDB = FLT_MAX;
+  float maxVDB = -FLT_MAX;  
+
   // compute min/max's
+#ifdef USE_OPENMP
+# pragma omp parallel for reduction(min: minValue, minVDB) reduction(max: maxValue, maxVDB)
+#endif  
   for (int z=0; z<g_dims.z; ++z) {
     for (int y=0; y<g_dims.y; ++y) {
       for (int x=0; x<g_dims.x; ++x) {
         float value0 = getValue(input,x,y,z);
-        res.minValue = fminf(res.minValue,value0);
-        res.maxValue = fmaxf(res.maxValue,value0);
+        minValue = fminf(minValue,value0);
+        maxValue = fmaxf(maxValue,value0);
 
         float value1 = getValue(comp,x,y,z);
-        res.minVDB = fminf(res.minVDB,value1);
-        res.maxVDB = fmaxf(res.maxVDB,value1);
+        minVDB = fminf(minVDB,value1);
+        maxVDB = fmaxf(maxVDB,value1);
       }
     }
   }
 
+  res.minValue = minValue;
+  res.maxValue = maxValue;
+  res.minVDB = minVDB;
+  res.maxVDB = maxVDB;  
+
   double sumSquared{0.0};
   double sumSquaredErr{0.0};
+
+#ifdef USE_OPENMP
+# pragma omp parallel for reduction(+: sumSquared, sumSquaredErr)
+#endif  
   for (int z=0; z<g_dims.z; ++z) {
     for (int y=0; y<g_dims.y; ++y) {
       for (int x=0; x<g_dims.x; ++x) {
