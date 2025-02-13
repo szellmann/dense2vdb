@@ -176,11 +176,13 @@ Stats computeStats(const char *input, Compressed comp)
 
   double sumSquared{0.0};
   double sumSquaredErr{0.0};
+  double signalMean{0.0};
   for (int z=0; z<g_dims.z; ++z) {
     for (int y=0; y<g_dims.y; ++y) {
       for (int x=0; x<g_dims.x; ++x) {
         float value0 = mapValue(getValue(input,x,y,z), res.minValue, res.maxValue);
         float value1 = mapValue(getValue(comp,x,y,z), res.minVDB, res.maxVDB);
+        signalMean += value0;
         double sqr = double(value0) * double(value0);
         sumSquared += sqr;
         double diff = double(value0) - double(value1);
@@ -189,11 +191,13 @@ Stats computeStats(const char *input, Compressed comp)
     }
   }
   size_t N = g_dims.x * size_t(g_dims.y) * g_dims.z;
+  signalMean /= N;
   res.mse = sumSquaredErr / N;
-  double signalMean = sumSquared / N;
+  double signalMean2 = sumSquared / N;
   double noiseMean = res.mse;
   if (noiseMean == 0.0) res.snr = INFINITY;
-  else res.snr = 20*log10(sqrt(signalMean)/sqrt(noiseMean));
+  //else res.snr = 20*log10(sqrt(signalMean2)/sqrt(noiseMean));
+  else res.snr = signalMean / sqrt(noiseMean);
   return res;
 }
 
