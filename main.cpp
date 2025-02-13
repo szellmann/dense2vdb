@@ -193,7 +193,7 @@ Stats computeStats(const char *input, Compressed comp)
   float minValue = FLT_MAX;
   float maxValue = -FLT_MAX;
   float minVDB = FLT_MAX;
-  float maxVDB = -FLT_MAX;  
+  float maxVDB = -FLT_MAX; 
 
   // compute min/max's
 #ifdef USE_OPENMP
@@ -453,7 +453,7 @@ int main(int argc, char **argv)
 
     uint64_t bufferSize;    
 
-#ifdef EXPORT_VDB
+#if defined(EXPORT_VDB) || defined(EXPORT_HISTOGRAM)
     d2nvdbCompress(input.data(), &parms, nullptr, &bufferSize, g_outFileName.c_str());
 #else  
     d2nvdbCompress(input.data(), &parms, nullptr, &bufferSize);

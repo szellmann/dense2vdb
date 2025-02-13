@@ -275,7 +275,7 @@ void compressOpenVDB_v2(const char *input)
   {
       uint64_t localCounts[N] = {0};
 
-      #pragma omp for collapse(3)
+      #pragma omp for
       for (int z = 0; z < g_dims.z; ++z) {
           for (int y = 0; y < g_dims.y; ++y) {
               for (int x = 0; x < g_dims.x; ++x) {
@@ -315,11 +315,13 @@ void compressOpenVDB_v2(const char *input)
 
 #ifdef EXPORT_HISTOGRAM
 if (histogram_filename.size() > 0) {
-  FILE *f = fopen(histogram_filename.c_str(),"wt+");
-  for (int i=0; i<N; ++i) {
-      fprintf(f, "%d;%lld\n", i, counts[i]);
-  }
-  fclose(f);
+  // FILE *f = fopen(histogram_filename.c_str(),"wt+");
+  // for (int i=0; i<N; ++i) {
+  //     fprintf(f, "%d;%lld\n", i, counts[i]);
+  // }
+  // fclose(f);
+  std::ofstream out(histogram_filename, std::ios::binary);
+  out.write((const char *)counts, sizeof(counts));
 }
 #endif
 
@@ -366,11 +368,10 @@ if (histogram_filename.size() > 0) {
 
   // in the following we assume a 5,4,3 layout, i.e., leaf nodes are 2^3 voxel grids
   auto &tree = grid->tree();
-  openvdb::tree::ValueAccessor<FloatTree> acc_tree(tree);
   // we want a full domain box, so we set the voxels at
   // the extrema to their actual values and *activate them*:
-  acc_tree.addTile(0, openvdb::math::Coord(0, 0, 0), getValue(input, 0, 0, 0), true);
-  acc_tree.addTile(0, openvdb::math::Coord(g_dims.x-1, g_dims.y-1, g_dims.z-1),
+  tree.addTile(0, openvdb::math::Coord(0, 0, 0), getValue(input, 0, 0, 0), true);
+  tree.addTile(0, openvdb::math::Coord(g_dims.x-1, g_dims.y-1, g_dims.z-1),
       getValue(input, g_dims.x-1, g_dims.y-1, g_dims.z-1), true);
 
   auto div_up = [](int a, int b) { return (a + b - 1) / b; };
@@ -426,17 +427,7 @@ if (histogram_filename.size() > 0) {
   std::cout << "Activating " << numBricksToActivate << " out of " << brickRefs.size()
     << " level-" << (level-1) << " bricks\n";
 
-#ifdef USE_OPENMP
-# pragma omp parallel
-{
-#endif  
-  openvdb::tree::ValueAccessor<FloatTree> acc_tree_thread(tree);  
-
-#ifdef USE_OPENMP
-# pragma omp for
-#endif
-  //for (size_t i=brickRefs.size()-1; i>=brickRefs.size()-numBricksToActivate; i--) {
-  for (size_t i = brickRefs.size() - numBricksToActivate; i < brickRefs.size(); ++i) {  
+  for (size_t i=brickRefs.size()-1; i>=brickRefs.size()-numBricksToActivate; i--) {
     const BrickRef &ref = brickRefs[i];
     int bx = ref.brickID.x;
     int by = ref.brickID.y;
@@ -450,19 +441,16 @@ if (histogram_filename.size() > 0) {
     for (int z=lower.z; z<upper.z; ++z) {
       for (int y=lower.y; y<upper.y; ++y) {
         for (int x=lower.x; x<upper.x; ++x) {
-          acc_tree_thread.addTile(0, openvdb::math::Coord(x,y,z), getValue(input, x, y, z), true);
+          tree.addTile(0, openvdb::math::Coord(x,y,z), getValue(input, x, y, z), true);
         }
       }
     }
   }
 
-#ifdef USE_OPENMP
-}
-#endif
-
   LOG_OMP(tree_addTile);
-  //tree.prune();
-  openvdb::tools::prune(tree); // multi-threaded
+
+  tree.prune();
+
   LOG_OMP(tree_prune);
 
   std::cout << "activeVoxelCount: " << tree.activeVoxelCount() << '\n';
@@ -493,16 +481,18 @@ void d2nvdbCompress(const char *raw_in,
     // NVDB_!
     if (populateState(*params)) {
 
-#ifdef EXPORT_HISTOGRAM        
+#ifdef EXPORT_HISTOGRAM
       if(filename != nullptr)
-        histogram_filename = std::string(filename) + ".txt";
+        histogram_filename = std::string(filename) + ".bin";
 #endif
       compressOpenVDB_v2(raw_in);
 
+#ifdef EXPORT_VDB
       if(filename != nullptr) {
         std::string full_filepath = std::string(filename) + ".vdb";
         openvdb::io::File(full_filepath).write(g_sparseGrids);
       }
+#endif    
 
       if (!g_sparseGrids.empty()) {
         auto handle = nanovdb_convert(&g_sparseGrids);
