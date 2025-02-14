@@ -174,7 +174,13 @@ float getValue(nanovdb::NanoGrid<float> *nvdb, int x, int y, int z)
 inline
 float mapValue(float value, float minValue, float maxValue)
 {
-  return (value-minValue)/(maxValue-minValue);
+  float v_norm = (value-minValue)/(maxValue-minValue);
+  if (v_norm < 0.f)
+    v_norm = 0.f;
+  if (v_norm > 1.f)
+    v_norm = 1.f;
+    
+  return v_norm;
 }
 
 struct Stats
@@ -228,7 +234,7 @@ Stats computeStats(const char *input, Compressed comp)
     for (int y=0; y<g_dims.y; ++y) {
       for (int x=0; x<g_dims.x; ++x) {
         float value0 = mapValue(getValue(input,x,y,z), res.minValue, res.maxValue);
-        float value1 = mapValue(getValue(comp,x,y,z), res.minVDB, res.maxVDB);
+        float value1 = mapValue(getValue(comp,x,y,z), res.minValue, res.maxValue);
         double sqr = double(value0) * double(value0);
         sumSquared += sqr;
         double diff = double(value0) - double(value1);
@@ -241,7 +247,9 @@ Stats computeStats(const char *input, Compressed comp)
   double signalMean = sumSquared / N;
   double noiseMean = res.mse;
   if (noiseMean == 0.0) res.snr = INFINITY;
-  else res.snr = 20*log10(sqrt(signalMean)/sqrt(noiseMean));
+  //else res.snr = 20*log10(sqrt(signalMean)/sqrt(noiseMean));
+  else res.snr = 20*log10(1.0f/sqrt(res.mse));
+  
   return res;
 }
 
