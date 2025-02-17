@@ -189,7 +189,124 @@ struct Stats
   float minVDB{FLT_MAX}, maxVDB{-FLT_MAX};
   double mse{0.0};
   double snr{0.0};
+  double psnr{0.0};
+  double ssim{0.0};
 };
+
+std::vector<double> uniform_filter(const std::vector<double>& image, int win_size) {
+    //int rows = image.size(), cols = image[0].size();
+    std::vector<double> result(image.size(), 0.0);
+    int half_win = win_size / 2;
+    
+#ifdef USE_OPENMP
+# pragma omp parallel for
+#endif    
+    for (int i = half_win; i < g_dims.x - half_win; ++i) {
+        for (int j = half_win; j < g_dims.y - half_win; ++j) {
+          for (int k = half_win; k < g_dims.z - half_win; ++k) {
+            double sum = 0.0;
+            for (int m = -half_win; m <= half_win; ++m) {
+                for (int n = -half_win; n <= half_win; ++n) {
+                  for (int u = -half_win; u <= half_win; ++u) {
+                    size_t im_id = (i + m) + (j + n) * g_dims.x + (k + u) * g_dims.x * g_dims.y;
+                    sum += image[im_id];
+                  }
+                }
+            }
+
+            size_t res_id = (i) + (j) * g_dims.x + (k) * g_dims.x * g_dims.y;
+            result[res_id] = sum / (win_size * win_size);
+        }
+      }
+    }
+    return result;
+}
+
+template <typename Compressed>
+double compute_ssim(const char *input, Compressed comp, Stats res, double data_range = 1.0, int win_size = 7, double K1 = 0.01, double K2 = 0.03) {   
+    size_t N = g_dims.x * size_t(g_dims.y) * g_dims.z;
+    std::vector<double> im1(N);
+    std::vector<double> im2(N);
+
+#ifdef USE_OPENMP
+# pragma omp parallel for
+#endif  
+  for (int k=0; k<g_dims.z; ++k) {
+    for (int j=0; j<g_dims.y; ++j) {
+      for (int i=0; i<g_dims.x; ++i) {
+        // float value0 = getValue(input,i,j,k);
+        // float value1 = getValue(comp,i,j,k);
+        float value0 = mapValue(getValue(input,i,j,k), res.minValue, res.maxValue);
+        float value1 = mapValue(getValue(comp,i,j,k), res.minValue, res.maxValue);        
+        size_t id = (i) + (j) * g_dims.x + (k) * g_dims.x * g_dims.y;
+        im1[id] = value0;
+        im2[id] = value1;
+      }
+    }
+  }    
+
+    //int rows = im1.size(), cols = im1[0].size();
+    double C1 = (K1 * data_range) * (K1 * data_range);
+    double C2 = (K2 * data_range) * (K2 * data_range);
+    
+    auto mu1 = uniform_filter(im1, win_size);
+    auto mu2 = uniform_filter(im2, win_size);
+    
+    std::vector<double> mu1_sq(im1.size(), 0.0), mu2_sq(im2.size(), 0.0), mu1_mu2(im1.size(), 0.0);
+    
+#ifdef USE_OPENMP
+# pragma omp parallel for
+#endif    
+    for (int i = 0; i < g_dims.x; ++i) {
+        for (int j = 0; j < g_dims.y; ++j) {
+          for (int k = 0; k < g_dims.z; ++k) {
+            size_t id = (i) + (j) * g_dims.x + (k) * g_dims.x * g_dims.y;
+            mu1_sq[id] = mu1[id] * mu1[id];
+            mu2_sq[id] = mu2[id] * mu2[id];
+            mu1_mu2[id] = mu1[id] * mu2[id];
+          }
+        }
+    }
+    
+    auto sigma1_sq = uniform_filter(im1, win_size);
+    auto sigma2_sq = uniform_filter(im2, win_size);
+    auto sigma12 = uniform_filter(im1, win_size);
+    
+#ifdef USE_OPENMP
+# pragma omp parallel for
+#endif    
+    for (int i = 0; i < g_dims.x; ++i) {
+        for (int j = 0; j < g_dims.y; ++j) {
+          for (int k = 0; k < g_dims.z; ++k) {
+            size_t id = (i) + (j) * g_dims.x + (k) * g_dims.x * g_dims.y;
+            sigma1_sq[id] -= mu1_sq[id];
+            sigma2_sq[id] -= mu2_sq[id];
+            sigma12[id] -= mu1_mu2[id];
+          }
+        }
+    }
+    
+    double ssim_sum = 0.0;
+    size_t count = 0;
+
+#ifdef USE_OPENMP
+# pragma omp parallel for reduction(+: ssim_sum, count)
+#endif    
+    for (int i = win_size / 2; i < g_dims.x - win_size / 2; ++i) {
+        for (int j = win_size / 2; j < g_dims.y - win_size / 2; ++j) {
+          for (int k = win_size / 2; k < g_dims.z - win_size / 2; ++k) {
+            size_t id = (i) + (j) * g_dims.x + (k) * g_dims.x * g_dims.y;
+
+            double numerator = (2 * mu1_mu2[id] + C1) * (2 * sigma12[id] + C2);
+            double denominator = (mu1_sq[id] + mu2_sq[id] + C1) * (sigma1_sq[id] + sigma2_sq[id] + C2);
+            ssim_sum += numerator / denominator;
+            count++;
+          }
+        }
+    }
+    
+    return ssim_sum / count;
+}
 
 template <typename Compressed>
 Stats computeStats(const char *input, Compressed comp)
@@ -200,6 +317,29 @@ Stats computeStats(const char *input, Compressed comp)
   float maxValue = -FLT_MAX;
   float minVDB = FLT_MAX;
   float maxVDB = -FLT_MAX; 
+
+#if 0
+  FILE *f_in = fopen("stats_in.bin", "wb+");
+  FILE *f_out = fopen("stats_out.bin", "wb+");
+
+  fwrite(&g_dims[0], sizeof(g_dims), 1, f_in);
+  fwrite(&g_dims[0], sizeof(g_dims), 1, f_out);
+
+  for (int z=0; z<g_dims.z; ++z) {
+    for (int y=0; y<g_dims.y; ++y) {
+      for (int x=0; x<g_dims.x; ++x) {
+        float value0 = getValue(input,x,y,z);
+        float value1 = getValue(comp,x,y,z);
+
+        fwrite(&value0, sizeof(float), 1, f_in);
+        fwrite(&value1, sizeof(float), 1, f_out);
+      }
+    }
+  }
+
+  fclose(f_in);
+  fclose(f_out);
+#endif  
 
   // compute min/max's
 #ifdef USE_OPENMP
@@ -224,6 +364,9 @@ Stats computeStats(const char *input, Compressed comp)
   res.minVDB = minVDB;
   res.maxVDB = maxVDB;  
 
+  double data_range = maxValue - minValue;
+  res.ssim = compute_ssim(input, comp, res, data_range);
+
   double sumSquared{0.0};
   double sumSquaredErr{0.0};
 
@@ -242,13 +385,19 @@ Stats computeStats(const char *input, Compressed comp)
       }
     }
   }
+  
   size_t N = g_dims.x * size_t(g_dims.y) * g_dims.z;
   res.mse = sumSquaredErr / N;
   double signalMean = sumSquared / N;
   double noiseMean = res.mse;
-  if (noiseMean == 0.0) res.snr = INFINITY;
-  //else res.snr = 20*log10(sqrt(signalMean)/sqrt(noiseMean));
-  else res.snr = 20*log10(1.0f/sqrt(res.mse));
+  if (noiseMean == 0.0) {
+    res.snr = INFINITY;
+    res.psnr = INFINITY;
+  }
+  else {
+    res.snr = 20*log10(sqrt(signalMean)/sqrt(noiseMean));
+    res.psnr = 10*log10(res.maxValue * res.maxValue/res.mse);
+  }
   
   return res;
 }
@@ -446,6 +595,8 @@ int main(int argc, char **argv)
       std::cout << "min/max (out) ...: [" << s.minVDB << ',' << s.maxVDB << "]\n";
       std::cout << "MSE .............: " << s.mse << '\n';
       std::cout << "SNR .............: " << s.snr << '\n';
+      std::cout << "PSNR ............: " << s.psnr << '\n';
+      std::cout << "SSIM ............: " << s.ssim << '\n';
     }
 
     std::ofstream os(g_outFileName, std::ios::out | std::ios::binary);
@@ -487,6 +638,8 @@ int main(int argc, char **argv)
       std::cout << "min/max (out) ...: [" << s.minVDB << ',' << s.maxVDB << "]\n";
       std::cout << "MSE .............: " << s.mse << '\n';
       std::cout << "SNR .............: " << s.snr << '\n';
+      std::cout << "PSNR ............: " << s.psnr << '\n';
+      std::cout << "SSIM ............: " << s.ssim << '\n';
     }
 
     std::ofstream os(g_outFileName, std::ios::out | std::ios::binary);
