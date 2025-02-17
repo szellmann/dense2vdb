@@ -208,13 +208,13 @@ std::vector<double> uniform_filter(const std::vector<double>& image, int win_siz
             for (int m = -half_win; m <= half_win; ++m) {
                 for (int n = -half_win; n <= half_win; ++n) {
                   for (int u = -half_win; u <= half_win; ++u) {
-                    size_t im_id = (i + m) + (j + n) * g_dims.x + (k + u) * g_dims.x * g_dims.y;
+                    size_t im_id = size_t(i + m) + size_t(j + n) * g_dims.x + size_t(k + u) * g_dims.x * g_dims.y;
                     sum += image[im_id];
                   }
                 }
             }
 
-            size_t res_id = (i) + (j) * g_dims.x + (k) * g_dims.x * g_dims.y;
+            size_t res_id = size_t(i) + size_t(j) * g_dims.x + size_t(k) * g_dims.x * g_dims.y;
             result[res_id] = sum / (win_size * win_size);
         }
       }
@@ -238,7 +238,7 @@ double compute_ssim(const char *input, Compressed comp, Stats res, double data_r
         // float value1 = getValue(comp,i,j,k);
         float value0 = mapValue(getValue(input,i,j,k), res.minValue, res.maxValue);
         float value1 = mapValue(getValue(comp,i,j,k), res.minValue, res.maxValue);        
-        size_t id = (i) + (j) * g_dims.x + (k) * g_dims.x * g_dims.y;
+        size_t id = size_t(i) + size_t(j) * g_dims.x + size_t(k) * g_dims.x * g_dims.y;
         im1[id] = value0;
         im2[id] = value1;
       }
@@ -260,7 +260,7 @@ double compute_ssim(const char *input, Compressed comp, Stats res, double data_r
     for (int i = 0; i < g_dims.x; ++i) {
         for (int j = 0; j < g_dims.y; ++j) {
           for (int k = 0; k < g_dims.z; ++k) {
-            size_t id = (i) + (j) * g_dims.x + (k) * g_dims.x * g_dims.y;
+            size_t id = size_t(i) + size_t(j) * g_dims.x + size_t(k) * g_dims.x * g_dims.y;
             mu1_sq[id] = mu1[id] * mu1[id];
             mu2_sq[id] = mu2[id] * mu2[id];
             mu1_mu2[id] = mu1[id] * mu2[id];
@@ -278,7 +278,7 @@ double compute_ssim(const char *input, Compressed comp, Stats res, double data_r
     for (int i = 0; i < g_dims.x; ++i) {
         for (int j = 0; j < g_dims.y; ++j) {
           for (int k = 0; k < g_dims.z; ++k) {
-            size_t id = (i) + (j) * g_dims.x + (k) * g_dims.x * g_dims.y;
+            size_t id = size_t(i) + size_t(j) * g_dims.x + size_t(k) * g_dims.x * g_dims.y;
             sigma1_sq[id] -= mu1_sq[id];
             sigma2_sq[id] -= mu2_sq[id];
             sigma12[id] -= mu1_mu2[id];
@@ -295,7 +295,7 @@ double compute_ssim(const char *input, Compressed comp, Stats res, double data_r
     for (int i = win_size / 2; i < g_dims.x - win_size / 2; ++i) {
         for (int j = win_size / 2; j < g_dims.y - win_size / 2; ++j) {
           for (int k = win_size / 2; k < g_dims.z - win_size / 2; ++k) {
-            size_t id = (i) + (j) * g_dims.x + (k) * g_dims.x * g_dims.y;
+            size_t id = size_t(i) + size_t(j) * g_dims.x + size_t(k) * g_dims.x * g_dims.y;
 
             double numerator = (2 * mu1_mu2[id] + C1) * (2 * sigma12[id] + C2);
             double denominator = (mu1_sq[id] + mu2_sq[id] + C1) * (sigma1_sq[id] + sigma2_sq[id] + C2);
