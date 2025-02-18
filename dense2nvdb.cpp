@@ -364,6 +364,28 @@ if (histogram_filename.size() > 0) {
   openvdb::FloatGrid::Ptr grid = openvdb::FloatGrid::create(maxValue);
   grid->setName("density");
 
+  ///////////////////////////////
+  if (targetCompressionRate >= 1.0f)
+  {
+    auto acc = grid->getAccessor();
+    for (int z=0; z<g_dims.z; ++z) {
+      for (int y=0; y<g_dims.y; ++y) {
+        for (int x=0; x<g_dims.x; ++x) {
+          openvdb::Coord xyz(x, y, z);                 
+          acc.setValue(xyz, getValue(input, x, y, z));
+        }
+      }
+    }
+
+    std::cout << "activeVoxelCount: " << grid->tree().activeVoxelCount() << '\n';
+    std::cout << "Compression achieved: "
+      << double(grid->tree().activeVoxelCount()/double(g_dims.x*size_t(g_dims.y)*g_dims.z)) << '\n';
+  
+    g_sparseGrids.push_back(grid);
+    return;  
+  }
+  ///////////////////////////////
+
   LOG_OMP(FloatGrid_create);
 
   // in the following we assume a 5,4,3 layout, i.e., leaf nodes are 2^3 voxel grids
