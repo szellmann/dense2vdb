@@ -183,14 +183,36 @@ float mapValue(float value, float minValue, float maxValue)
   return v_norm;
 }
 
+inline
+float mapValue2(float value, float minValue, float maxValue)
+{
+  float v_norm = (value-minValue)/(maxValue-minValue);   
+  return v_norm;
+}
+
+inline
+float mapValue3(float value, float minValue, float maxValue)
+{    
+  return value;
+}
+
 struct Stats
 {
   float minValue{FLT_MAX}, maxValue{-FLT_MAX};
   float minVDB{FLT_MAX}, maxVDB{-FLT_MAX};
+  
   double mse{0.0};
   double snr{0.0};
   double psnr{0.0};
   double ssim{0.0};
+
+  double mse2{0.0};
+  double snr2{0.0};
+  double psnr2{0.0};
+
+  double mse3{0.0};
+  double snr3{0.0};
+  double psnr3{0.0};
 };
 
 std::vector<double> uniform_filter(const std::vector<double>& image, int win_size) {
@@ -364,40 +386,96 @@ Stats computeStats(const char *input, Compressed comp)
   res.minVDB = minVDB;
   res.maxVDB = maxVDB;  
 
-  double data_range = maxValue - minValue;
-  res.ssim = compute_ssim(input, comp, res, data_range);
+  res.ssim = 0;//compute_ssim(input, comp, res, maxValue - minValue);
 
   double sumSquared{0.0};
   double sumSquaredErr{0.0};
 
+  double sumSquared2{0.0};
+  double sumSquaredErr2{0.0};
+  
+  double sumSquared3{0.0};
+  double sumSquaredErr3{0.0};  
+
 #ifdef USE_OPENMP
-# pragma omp parallel for reduction(+: sumSquared, sumSquaredErr)
+# pragma omp parallel for reduction(+: sumSquared, sumSquaredErr, sumSquared2, sumSquaredErr2, sumSquared3, sumSquaredErr3)
 #endif  
   for (int z=0; z<g_dims.z; ++z) {
     for (int y=0; y<g_dims.y; ++y) {
       for (int x=0; x<g_dims.x; ++x) {
-        float value0 = mapValue(getValue(input,x,y,z), res.minValue, res.maxValue);
-        float value1 = mapValue(getValue(comp,x,y,z), res.minValue, res.maxValue);
-        double sqr = double(value0) * double(value0);
-        sumSquared += sqr;
-        double diff = double(value0) - double(value1);
-        sumSquaredErr += diff * diff;
+        {
+          float value0 = mapValue(getValue(input,x,y,z), res.minValue, res.maxValue);
+          float value1 = mapValue(getValue(comp,x,y,z), res.minValue, res.maxValue);
+          double sqr = double(value0) * double(value0);        
+          double diff = double(value0) - double(value1);
+          sumSquared += sqr;
+          sumSquaredErr += diff * diff;
+        }
+
+        {
+          float value0 = mapValue2(getValue(input,x,y,z), res.minValue, res.maxValue);
+          float value1 = mapValue2(getValue(comp,x,y,z), res.minVDB, res.maxVDB);
+          double sqr = double(value0) * double(value0);        
+          double diff = double(value0) - double(value1);
+          sumSquared2 += sqr;
+          sumSquaredErr2 += diff * diff;
+        }
+        
+        {
+          float value0 = mapValue3(getValue(input,x,y,z), res.minValue, res.maxValue);
+          float value1 = mapValue3(getValue(comp,x,y,z), res.minVDB, res.maxVDB);
+          double sqr = double(value0) * double(value0);        
+          double diff = double(value0) - double(value1);
+          sumSquared3 += sqr;
+          sumSquaredErr3 += diff * diff;
+        }        
       }
     }
   }
   
   size_t N = g_dims.x * size_t(g_dims.y) * g_dims.z;
-  res.mse = sumSquaredErr / N;
-  double signalMean = sumSquared / N;
-  double noiseMean = res.mse;
-  if (noiseMean == 0.0) {
-    res.snr = INFINITY;
-    res.psnr = INFINITY;
+
+  {
+    res.mse = sumSquaredErr / N;
+    double signalMean = sumSquared / N;
+    double noiseMean = res.mse;
+    if (noiseMean == 0.0) {
+      res.snr = INFINITY;
+      res.psnr = INFINITY;
+    }
+    else {
+      res.snr = 20*log10(sqrt(signalMean)/sqrt(noiseMean));
+      res.psnr = 10*log10(1.0/noiseMean);
+    }
   }
-  else {
-    res.snr = 20*log10(sqrt(signalMean)/sqrt(noiseMean));
-    res.psnr = 10*log10(res.maxValue * res.maxValue/res.mse);
+
+  {
+    res.mse2 = sumSquaredErr2 / N;
+    double signalMean = sumSquared2 / N;
+    double noiseMean = res.mse2;
+    if (noiseMean == 0.0) {
+      res.snr2 = INFINITY;
+      res.psnr2 = INFINITY;
+    }
+    else {
+      res.snr2 = 20*log10(sqrt(signalMean)/sqrt(noiseMean));
+      res.psnr2 = 10*log10(1.0/noiseMean);
+    }
   }
+
+  {
+    res.mse3 = sumSquaredErr3 / N;
+    double signalMean = sumSquared3 / N;
+    double noiseMean = res.mse3;
+    if (noiseMean == 0.0) {
+      res.snr3 = INFINITY;
+      res.psnr3 = INFINITY;
+    }
+    else {
+      res.snr3 = 20*log10(sqrt(signalMean)/sqrt(noiseMean));
+      res.psnr3 = 10*log10(res.maxValue * res.maxValue/noiseMean);
+    }
+  }    
   
   return res;
 }
@@ -596,6 +674,15 @@ int main(int argc, char **argv)
       std::cout << "MSE .............: " << s.mse << '\n';
       std::cout << "SNR .............: " << s.snr << '\n';
       std::cout << "PSNR ............: " << s.psnr << '\n';
+
+      std::cout << "MSE2 .............: " << s.mse2 << '\n';
+      std::cout << "SNR2 .............: " << s.snr2 << '\n';
+      std::cout << "PSNR2 ............: " << s.psnr2 << '\n';
+
+      std::cout << "MSE3 .............: " << s.mse3 << '\n';
+      std::cout << "SNR3 .............: " << s.snr3 << '\n';
+      std::cout << "PSNR3 ............: " << s.psnr3 << '\n';
+
       std::cout << "SSIM ............: " << s.ssim << '\n';
     }
 
@@ -639,6 +726,15 @@ int main(int argc, char **argv)
       std::cout << "MSE .............: " << s.mse << '\n';
       std::cout << "SNR .............: " << s.snr << '\n';
       std::cout << "PSNR ............: " << s.psnr << '\n';
+      
+      std::cout << "MSE2 .............: " << s.mse2 << '\n';
+      std::cout << "SNR2 .............: " << s.snr2 << '\n';
+      std::cout << "PSNR2 ............: " << s.psnr2 << '\n';
+
+      std::cout << "MSE3 .............: " << s.mse3 << '\n';
+      std::cout << "SNR3 .............: " << s.snr3 << '\n';
+      std::cout << "PSNR3 ............: " << s.psnr3 << '\n';
+
       std::cout << "SSIM ............: " << s.ssim << '\n';
     }
 
