@@ -27,3 +27,7 @@ DOI = {10.2312/pgv.20251152}
 - CMake, C++17 compiler
 - OpenVDB and NanoVDB
 - ZFP (optional, used for comparison only)
+
+# Licence
+
+Apache 2.0
